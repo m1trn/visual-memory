@@ -1,0 +1,21 @@
+# All tunables live here. Never hardcode these in modules.
+
+encoder:
+  # torch.hub name; small = ViT-S/14, 384-dim embeddings
+  name: dinov2_vits14
+  input_size: 224          # square resize; must be multiple of 14
+  device: cpu
+  batch_size: 16
+
+memory:
+  db_path: data/memory.db
+  index_path: data/memory.faiss
+  exemplars_per_identity: 5   # K
+  reid_threshold: 0.80        # cosine, tune after Phase 7
+
+video:
+  detect_every_n_frames: 5
+
+anomaly:
+  method: knn
+  k: 5
