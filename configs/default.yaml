@@ -13,6 +13,9 @@ memory:
   exemplars_per_identity: 5   # K
   reid_threshold: 0.80        # cosine, tune after Phase 7
 
+search:
+  default_k: 5
+
 video:
   detect_every_n_frames: 5
 

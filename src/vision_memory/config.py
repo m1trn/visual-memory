@@ -19,6 +19,11 @@ class EncoderConfig:
     batch_size: int
 
 
+@dataclass(frozen=True)
+class SearchConfig:
+    default_k: int
+
+
 def load_raw(path: Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
     """Load the YAML config as a plain dict."""
     with path.open("r", encoding="utf-8") as f:
@@ -28,3 +33,8 @@ def load_raw(path: Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
 def load_encoder_config(path: Path = DEFAULT_CONFIG_PATH) -> EncoderConfig:
     """Load only the `encoder` section as a typed dataclass."""
     return EncoderConfig(**load_raw(path)["encoder"])
+
+
+def load_search_config(path: Path = DEFAULT_CONFIG_PATH) -> SearchConfig:
+    """Load only the `search` section as a typed dataclass."""
+    return SearchConfig(**load_raw(path)["search"])
