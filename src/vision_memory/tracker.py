@@ -1,0 +1,288 @@
+"""Multi-object tracking: per-frame detections -> stable track ids.
+
+ByteTrack-style association: a two-pass Hungarian match (high-confidence
+detections first, then a second low-confidence pass to recover boxes the
+detector was unsure about) over Kalman-filter motion predictions, optionally
+blended with appearance (embedding) cosine similarity.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+import numpy as np
+from scipy.optimize import linear_sum_assignment
+
+from vision_memory.config import TrackerConfig
+from vision_memory.detector import Detection
+
+
+class KalmanBox:
+    """Constant-velocity Kalman filter over a single box.
+
+    State is ``[cx, cy, w, h, vx, vy, vw, vh]`` (box center, size, and their
+    velocities) rather than the SORT ``[cx, cy, area, aspect, ...]``
+    convention: w/h are tracked directly, which keeps the state-transition
+    and measurement matrices simple, linear, and free of the divide-by-aspect
+    numerical fragility that area/aspect parameterizations can hit on thin
+    or noisy boxes.
+    """
+
+    def __init__(self, xyxy: np.ndarray) -> None:
+        cx, cy, w, h = _xyxy_to_cxcywh(xyxy)
+        self.x = np.array([cx, cy, w, h, 0.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        self.P = np.eye(8, dtype=np.float64) * 10.0
+
+        self._F = np.eye(8, dtype=np.float64)
+        for i in range(4):
+            self._F[i, i + 4] = 1.0
+        self._H = np.zeros((4, 8), dtype=np.float64)
+        for i in range(4):
+            self._H[i, i] = 1.0
+        self._Q = np.eye(8, dtype=np.float64)
+        self._Q[4:, 4:] *= 0.01  # velocities drift slowly
+        self._R = np.eye(4, dtype=np.float64)
+        self._R[2:, 2:] *= 10.0  # width/height measurements are noisier than centers
+
+    def predict(self) -> np.ndarray:
+        """Advance the state by one frame and return the predicted xyxy box."""
+        self.x = self._F @ self.x
+        self.P = self._F @ self.P @ self._F.T + self._Q
+        return _cxcywh_to_xyxy(self.x[:4])
+
+    def update(self, xyxy: np.ndarray) -> None:
+        """Correct the state with an observed xyxy box."""
+        z = np.array(_xyxy_to_cxcywh(xyxy), dtype=np.float64)
+        y = z - self._H @ self.x
+        S = self._H @ self.P @ self._H.T + self._R
+        K = self.P @ self._H.T @ np.linalg.inv(S)
+        self.x = self.x + K @ y
+        self.P = (np.eye(8) - K @ self._H) @ self.P
+
+
+@dataclass
+class Track:
+    """One tracked object."""
+
+    id: int
+    box: np.ndarray
+    score: float
+    class_id: int
+    label: str
+    hits: int
+    time_since_update: int
+    state: str  # "tentative" | "active" | "lost" | "dead"
+    embedding: np.ndarray | None = None
+    _kf: KalmanBox = field(repr=False, compare=False, default=None)  # type: ignore[assignment]
+
+
+def iou_matrix(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Pairwise IoU between boxes ``a`` (N,4) and ``b`` (M,4), xyxy."""
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+    if len(a) == 0 or len(b) == 0:
+        return np.zeros((len(a), len(b)), dtype=np.float64)
+    ax1, ay1, ax2, ay2 = a[:, 0], a[:, 1], a[:, 2], a[:, 3]
+    bx1, by1, bx2, by2 = b[:, 0], b[:, 1], b[:, 2], b[:, 3]
+    ix1 = np.maximum(ax1[:, None], bx1[None, :])
+    iy1 = np.maximum(ay1[:, None], by1[None, :])
+    ix2 = np.minimum(ax2[:, None], bx2[None, :])
+    iy2 = np.minimum(ay2[:, None], by2[None, :])
+    iw = np.clip(ix2 - ix1, 0, None)
+    ih = np.clip(iy2 - iy1, 0, None)
+    inter = iw * ih
+    area_a = np.clip(ax2 - ax1, 0, None) * np.clip(ay2 - ay1, 0, None)
+    area_b = np.clip(bx2 - bx1, 0, None) * np.clip(by2 - by1, 0, None)
+    union = area_a[:, None] + area_b[None, :] - inter
+    return np.divide(inter, union, out=np.zeros_like(inter), where=union > 0)
+
+
+def _xyxy_to_cxcywh(box: np.ndarray) -> tuple[float, float, float, float]:
+    x1, y1, x2, y2 = box
+    return (x1 + x2) / 2.0, (y1 + y2) / 2.0, x2 - x1, y2 - y1
+
+
+def _cxcywh_to_xyxy(state: np.ndarray) -> np.ndarray:
+    cx, cy, w, h = state
+    return np.array([cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2], dtype=np.float32)
+
+
+def _normalize(v: np.ndarray) -> np.ndarray:
+    n = np.linalg.norm(v)
+    return v if n == 0 else v / n
+
+
+def _cosine_matrix(track_embs: list[np.ndarray | None], det_embs: list[np.ndarray | None]) -> np.ndarray:
+    """Pairwise cosine similarity; a pair with a missing embedding gets NaN."""
+    n, m = len(track_embs), len(det_embs)
+    out = np.full((n, m), np.nan, dtype=np.float64)
+    for i, te in enumerate(track_embs):
+        if te is None:
+            continue
+        for j, de in enumerate(det_embs):
+            if de is None:
+                continue
+            out[i, j] = float(np.dot(te, de))
+    return out
+
+
+class ByteTracker:
+    """ByteTrack-style multi-object tracker over a single stream of frames."""
+
+    def __init__(self, cfg: TrackerConfig) -> None:
+        self.cfg = cfg
+        self._tracks: list[Track] = []
+        self._next_id = 1
+        self._newly_lost: list[Track] = []
+
+    def update(
+        self,
+        detections: list[Detection] | None,
+        embeddings: dict[int, np.ndarray] | None = None,
+    ) -> list[Track]:
+        """Process one frame and return the currently active tracks.
+
+        ``detections=None`` means the detector did not run this frame: tracks
+        are advanced by Kalman prediction only. Time still passes, so
+        ``time_since_update`` grows and ``max_age`` stays denominated in video
+        frames rather than in detector invocations.
+        """
+        for t in self._tracks:
+            t.box = t._kf.predict()
+
+        if detections is None:
+            self._age(range(len(self._tracks)))
+            self._reap()
+            return [t for t in self._tracks if t.state == "active"]
+
+        embeddings = embeddings or {}
+        high_idx = [i for i, d in enumerate(detections) if d.score >= self.cfg.high_conf]
+        low_idx = [i for i, d in enumerate(detections) if self.cfg.low_conf <= d.score < self.cfg.high_conf]
+
+        unmatched_tracks = list(range(len(self._tracks)))
+        matched_high: dict[int, int] = {}
+        if self._tracks and high_idx:
+            matched_high, unmatched_tracks, unmatched_high = self._match(
+                unmatched_tracks, high_idx, detections, embeddings, use_appearance=True
+            )
+        else:
+            unmatched_high = list(high_idx)
+
+        matched_low: dict[int, int] = {}
+        if unmatched_tracks and low_idx:
+            matched_low, unmatched_tracks, _unmatched_low = self._match(
+                unmatched_tracks, low_idx, detections, embeddings, use_appearance=False
+            )
+
+        for t_i, d_i in {**matched_high, **matched_low}.items():
+            self._apply_match(self._tracks[t_i], detections[d_i], embeddings.get(d_i))
+
+        self._age(unmatched_tracks, missed_association=True)
+
+        for d_i in unmatched_high:
+            self._spawn(detections[d_i], embeddings.get(d_i))
+
+        self._reap()
+        return [t for t in self._tracks if t.state == "active"]
+
+    def _age(self, track_idx, missed_association: bool = False) -> None:
+        """Advance ``time_since_update`` and mark tracks that ran out of life.
+
+        A tentative track that misses an association was probably a detector
+        false positive, so it is dropped at once instead of lingering for
+        ``max_age`` frames where it could steal matches from real tracks.
+        Only confirmed tracks become "lost" and reach ``pop_lost``.
+        """
+        for t_i in track_idx:
+            track = self._tracks[t_i]
+            track.time_since_update += 1
+            if missed_association and track.state == "tentative":
+                track.state = "dead"
+            elif track.time_since_update > self.cfg.max_age:
+                track.state = "lost" if track.state == "active" else "dead"
+
+    def _reap(self) -> None:
+        """Move finished tracks off the live list; confirmed ones become lost."""
+        if not any(t.state in ("lost", "dead") for t in self._tracks):
+            return
+        self._newly_lost.extend(t for t in self._tracks if t.state == "lost")
+        self._tracks = [t for t in self._tracks if t.state not in ("lost", "dead")]
+
+    def pop_lost(self) -> list[Track]:
+        """Return tracks that became lost since the last call, then clear them."""
+        lost, self._newly_lost = self._newly_lost, []
+        return lost
+
+    def _match(
+        self,
+        track_idx: list[int],
+        det_idx: list[int],
+        detections: list[Detection],
+        embeddings: dict[int, np.ndarray],
+        use_appearance: bool,
+    ) -> tuple[dict[int, int], list[int], list[int]]:
+        """Hungarian-match a subset of tracks against a subset of detections.
+
+        Returns (matches as {track_idx: det_idx}, leftover track_idx, leftover det_idx).
+        """
+        t_boxes = np.array([self._tracks[i].box for i in track_idx], dtype=np.float64)
+        d_boxes = np.array([detections[i].box for i in det_idx], dtype=np.float64)
+        iou = iou_matrix(t_boxes, d_boxes)
+
+        lam = self.cfg.appearance_weight if use_appearance else 0.0
+        if lam > 0.0:
+            track_embs = [self._tracks[i].embedding for i in track_idx]
+            det_embs = [embeddings.get(i) for i in det_idx]
+            cos = _cosine_matrix(track_embs, det_embs)
+            has_cos = ~np.isnan(cos)
+            cost = (1.0 - iou)
+            cost = np.where(has_cos, (1 - lam) * (1 - iou) + lam * (1 - cos), cost)
+        else:
+            cost = 1.0 - iou
+
+        row, col = linear_sum_assignment(cost)
+        matches: dict[int, int] = {}
+        matched_t, matched_d = set(), set()
+        for r, c in zip(row, col):
+            if iou[r, c] < self.cfg.iou_threshold:
+                continue
+            matches[track_idx[r]] = det_idx[c]
+            matched_t.add(r)
+            matched_d.add(c)
+        leftover_t = [track_idx[i] for i in range(len(track_idx)) if i not in matched_t]
+        leftover_d = [det_idx[i] for i in range(len(det_idx)) if i not in matched_d]
+        return matches, leftover_t, leftover_d
+
+    def _apply_match(self, track: Track, det: Detection, emb: np.ndarray | None) -> None:
+        box = np.array(det.box, dtype=np.float32)
+        track._kf.update(box)
+        track.box = _cxcywh_to_xyxy(track._kf.x[:4])
+        track.score = det.score
+        track.class_id = det.class_id
+        track.label = det.label
+        track.hits += 1
+        track.time_since_update = 0
+        if track.state == "tentative" and track.hits >= self.cfg.min_hits:
+            track.state = "active"
+        if emb is not None:
+            track.embedding = _normalize(emb if track.embedding is None else (track.embedding + emb) / 2.0)
+
+    def _spawn(self, det: Detection, emb: np.ndarray | None) -> None:
+        box = np.array(det.box, dtype=np.float32)
+        kf = KalmanBox(box)
+        track = Track(
+            id=self._next_id,
+            box=box,
+            score=det.score,
+            class_id=det.class_id,
+            label=det.label,
+            hits=1,
+            time_since_update=0,
+            state="tentative",
+            embedding=_normalize(emb) if emb is not None else None,
+            _kf=kf,
+        )
+        if self.cfg.min_hits <= 1:
+            track.state = "active"
+        self._next_id += 1
+        self._tracks.append(track)

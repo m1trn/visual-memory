@@ -11,10 +11,18 @@ detector:
   name: yolo11n
   model_path: data/models/yolo11n.onnx
   input_size: 640
-  conf_threshold: 0.25
+  conf_threshold: 0.1
   iou_threshold: 0.50
   classes: null            # list of COCO ids to keep, or null for all
   num_threads: 0           # 0 = onnxruntime default
+
+tracker:
+  max_age: 30            # frames a track survives without a match before it is lost
+  min_hits: 3             # consecutive matches before a tentative track becomes active
+  iou_threshold: 0.3      # min IoU to accept a match
+  high_conf: 0.5           # detections >= this go to the first association pass
+  low_conf: 0.1            # detections in [low_conf, high_conf) go to the second (ByteTrack) pass
+  appearance_weight: 0.0  # lambda in cost = (1-lambda)*(1-IoU) + lambda*(1-cosine); 0 = motion only
 
 memory:
   db_path: data/memory.db
@@ -26,7 +34,7 @@ search:
   default_k: 5
 
 video:
-  detect_every_n_frames: 5
+  detect_every_n_frames: 3   # tracker fills the gaps; 5 confirms tracks too slowly (min_hits*N frames)
 
 anomaly:
   method: knn

@@ -31,6 +31,21 @@ class DetectorConfig:
 
 
 @dataclass(frozen=True)
+class TrackerConfig:
+    max_age: int
+    min_hits: int
+    iou_threshold: float
+    high_conf: float
+    low_conf: float
+    appearance_weight: float
+
+
+@dataclass(frozen=True)
+class VideoConfig:
+    detect_every_n_frames: int
+
+
+@dataclass(frozen=True)
 class SearchConfig:
     default_k: int
 
@@ -71,3 +86,13 @@ def load_detector_config(path: Path = DEFAULT_CONFIG_PATH) -> DetectorConfig:
     raw = dict(load_raw(path)["detector"])
     raw["classes"] = tuple(raw["classes"]) if raw["classes"] else None
     return DetectorConfig(**raw)
+
+
+def load_tracker_config(path: Path = DEFAULT_CONFIG_PATH) -> TrackerConfig:
+    """Load only the `tracker` section as a typed dataclass."""
+    return TrackerConfig(**load_raw(path)["tracker"])
+
+
+def load_video_config(path: Path = DEFAULT_CONFIG_PATH) -> VideoConfig:
+    """Load only the `video` section as a typed dataclass."""
+    return VideoConfig(**load_raw(path)["video"])
