@@ -17,7 +17,7 @@ detector:
   num_threads: 0           # 0 = onnxruntime default
 
 tracker:
-  max_age: 6              # frames without a match before a track is lost; ~2x detect_every_n_frames (higher only breeds ghost boxes coasting on prediction)            # frames a track survives without a match before it is lost
+  max_age: 6              # frames without a match before a track is lost; ~2x detect_every_n_frames (higher only breeds ghost boxes coasting on prediction)
   min_hits: 3             # consecutive matches before a tentative track becomes active
   iou_threshold: 0.3      # min IoU to accept a match
   high_conf: 0.5           # detections >= this go to the first association pass
