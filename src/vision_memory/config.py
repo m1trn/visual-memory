@@ -20,6 +20,17 @@ class EncoderConfig:
 
 
 @dataclass(frozen=True)
+class DetectorConfig:
+    name: str
+    model_path: str
+    input_size: int
+    conf_threshold: float
+    iou_threshold: float
+    classes: tuple[int, ...] | None
+    num_threads: int
+
+
+@dataclass(frozen=True)
 class SearchConfig:
     default_k: int
 
@@ -53,3 +64,10 @@ def load_search_config(path: Path = DEFAULT_CONFIG_PATH) -> SearchConfig:
 def load_anomaly_config(path: Path = DEFAULT_CONFIG_PATH) -> AnomalyConfig:
     """Load only the `anomaly` section as a typed dataclass."""
     return AnomalyConfig(**load_raw(path)["anomaly"])
+
+
+def load_detector_config(path: Path = DEFAULT_CONFIG_PATH) -> DetectorConfig:
+    """Load only the `detector` section as a typed dataclass."""
+    raw = dict(load_raw(path)["detector"])
+    raw["classes"] = tuple(raw["classes"]) if raw["classes"] else None
+    return DetectorConfig(**raw)

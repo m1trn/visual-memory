@@ -7,6 +7,15 @@ encoder:
   device: cpu
   batch_size: 16
 
+detector:
+  name: yolo11n
+  model_path: data/models/yolo11n.onnx
+  input_size: 640
+  conf_threshold: 0.25
+  iou_threshold: 0.50
+  classes: null            # list of COCO ids to keep, or null for all
+  num_threads: 0           # 0 = onnxruntime default
+
 memory:
   db_path: data/memory.db
   index_path: data/memory.faiss
