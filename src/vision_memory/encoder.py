@@ -32,11 +32,35 @@ class Encoder:
     def __init__(self, cfg: EncoderConfig) -> None:
         self.cfg = cfg
         self.device = torch.device(cfg.device)
-        self.model = torch.hub.load("facebookresearch/dinov2", cfg.name, verbose=False)
+        if cfg.backend == "dinov2":
+            self.model = torch.hub.load("facebookresearch/dinov2", cfg.name, verbose=False)
+        elif cfg.backend == "radio":
+            # RADIO applies its own input conditioning, so images stay in [0, 1].
+            self.model = torch.hub.load(
+                "NVlabs/RADIO", "radio_model", version=cfg.name,
+                progress=False, skip_validation=True, trust_repo=True,
+            )
+        else:
+            raise ValueError(f"unknown encoder backend: {cfg.backend!r}")
         self.model.eval().to(self.device)
         for p in self.model.parameters():
             p.requires_grad_(False)
-        self._dim = int(self.model.embed_dim)
+        self._dim = self._probe_dim()
+
+    def _probe_dim(self) -> int:
+        """Ask the model for its own embedding width with one dummy forward."""
+        if self.cfg.backend == "dinov2":
+            return int(self.model.embed_dim)
+        with torch.inference_mode():
+            probe = torch.zeros(1, 3, self.cfg.input_size, self.cfg.input_size, device=self.device)
+            return int(self._forward(probe).shape[-1])
+
+    def _forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Backend-specific forward returning the global descriptor, shape (B, dim)."""
+        if self.cfg.backend == "dinov2":
+            return self.model(x)  # CLS token
+        out = self.model(x)
+        return out.summary if hasattr(out, "summary") else out[0]
 
     @property
     def dim(self) -> int:
@@ -59,7 +83,7 @@ class Encoder:
         with torch.inference_mode():
             for i in range(0, len(images), bs):
                 x = self._preprocess(images[i : i + bs]).to(self.device)
-                feats = self.model(x)  # CLS token, (B, dim)
+                feats = self._forward(x)  # (B, dim)
                 feats = torch.nn.functional.normalize(feats, dim=-1)
                 out.append(feats.cpu().numpy().astype(np.float32, copy=False))
         return np.concatenate(out, axis=0)
@@ -73,4 +97,6 @@ class Encoder:
             pil = pil.convert("RGB").resize((size, size), Image.BICUBIC)
             arrs.append(np.asarray(pil, dtype=np.float32) / 255.0)
         x = torch.from_numpy(np.stack(arrs)).permute(0, 3, 1, 2)
+        if self.cfg.backend == "radio":
+            return x  # RADIO normalizes internally via its input conditioner
         return (x - _MEAN) / _STD

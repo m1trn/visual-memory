@@ -13,6 +13,7 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "default
 
 @dataclass(frozen=True)
 class EncoderConfig:
+    backend: str
     name: str
     input_size: int
     device: str

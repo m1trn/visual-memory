@@ -1,9 +1,10 @@
 # All tunables live here. Never hardcode these in modules.
 
 encoder:
+  backend: dinov2          # dinov2 (Meta, ViT-S/14, 384-dim) | radio (NVIDIA C-RADIO, 2304-dim)
   # torch.hub name; small = ViT-S/14, 384-dim embeddings
   name: dinov2_vits14
-  input_size: 224          # square resize; must be multiple of 14
+  input_size: 224          # square resize; multiple of the patch size (14 for DINOv2, 16 for RADIO)
   device: cpu
   batch_size: 16
 

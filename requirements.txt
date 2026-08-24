@@ -11,3 +11,5 @@ scikit-learn
 
 # dev
 pytest
+timm
+einops
