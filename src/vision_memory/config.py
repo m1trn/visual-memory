@@ -39,11 +39,22 @@ class TrackerConfig:
     high_conf: float
     low_conf: float
     appearance_weight: float
+    embed_every_n: int
+    max_exemplars: int
+
+
+@dataclass(frozen=True)
+class MemoryConfig:
+    db_path: str
+    index_path: str
+    exemplars_per_identity: int
+    reid_threshold: float
 
 
 @dataclass(frozen=True)
 class VideoConfig:
     detect_every_n_frames: int
+    min_crop_px: int
 
 
 @dataclass(frozen=True)
@@ -92,6 +103,11 @@ def load_detector_config(path: Path = DEFAULT_CONFIG_PATH) -> DetectorConfig:
 def load_tracker_config(path: Path = DEFAULT_CONFIG_PATH) -> TrackerConfig:
     """Load only the `tracker` section as a typed dataclass."""
     return TrackerConfig(**load_raw(path)["tracker"])
+
+
+def load_memory_config(path: Path = DEFAULT_CONFIG_PATH) -> MemoryConfig:
+    """Load only the `memory` section as a typed dataclass."""
+    return MemoryConfig(**load_raw(path)["memory"])
 
 
 def load_video_config(path: Path = DEFAULT_CONFIG_PATH) -> VideoConfig:

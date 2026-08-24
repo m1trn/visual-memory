@@ -73,6 +73,9 @@ class Track:
     time_since_update: int
     state: str  # "tentative" | "active" | "lost" | "dead"
     embedding: np.ndarray | None = None
+    # Crops are never written to disk, so these L2-normalized observations are
+    # everything a dying track can hand to persistent memory.
+    exemplars: list[np.ndarray] = field(default_factory=list)
     _kf: KalmanBox = field(repr=False, compare=False, default=None)  # type: ignore[assignment]
 
 
@@ -126,6 +129,19 @@ def _cosine_matrix(track_embs: list[np.ndarray | None], det_embs: list[np.ndarra
     return out
 
 
+def should_embed(hits: int, embed_every_n: int) -> bool:
+    """True when a track with ``hits`` associations is due for a fresh exemplar.
+
+    The encoder is the expensive stage, so it runs on a subset of a track's
+    associations: the first one (so every track owns at least one embedding
+    before it can die) and then every ``embed_every_n``-th one after that.
+    ``embed_every_n <= 0`` disables embedding entirely.
+    """
+    if embed_every_n <= 0 or hits <= 0:
+        return False
+    return hits == 1 or hits % embed_every_n == 0
+
+
 class ByteTracker:
     """ByteTrack-style multi-object tracker over a single stream of frames."""
 
@@ -146,6 +162,11 @@ class ByteTracker:
         are advanced by Kalman prediction only. Time still passes, so
         ``time_since_update`` grows and ``max_age`` stays denominated in video
         frames rather than in detector invocations.
+
+        ``embeddings`` maps detection index -> embedding; each one is folded
+        into its track's running mean and exemplar buffer. Callers that encode
+        after association should leave it empty and use ``due_for_embedding``
+        plus ``add_embedding`` instead.
         """
         for t in self._tracks:
             t.box = t._kf.predict()
@@ -213,6 +234,42 @@ class ByteTracker:
         lost, self._newly_lost = self._newly_lost, []
         return lost
 
+    def due_for_embedding(self) -> list[Track]:
+        """Live tracks matched on this frame that are due for a fresh exemplar.
+
+        Call this right after ``update``: the returned tracks were corrected by
+        a real measurement this frame, so their boxes crop cleanly out of the
+        frame just processed. Encode those crops and hand each embedding back
+        with ``add_embedding``.
+        """
+        return [
+            t
+            for t in self._tracks
+            if t.time_since_update == 0 and should_embed(t.hits, self.cfg.embed_every_n)
+        ]
+
+    def add_embedding(self, track: Track, embedding: np.ndarray) -> None:
+        """Record an observed embedding for ``track`` (running mean + exemplar buffer)."""
+        emb = _normalize(np.asarray(embedding, dtype=np.float32))
+        track.embedding = _normalize(emb if track.embedding is None else (track.embedding + emb) / 2.0)
+        self._push_exemplar(track, emb)
+
+    def _push_exemplar(self, track: Track, emb: np.ndarray) -> None:
+        """Append an exemplar, evicting the most redundant one once the cap is hit.
+
+        Evicting the exemplar closest to the newcomer (rather than the oldest)
+        keeps the buffer spread over the track's appearance changes, which is
+        what memory wants: a bounded, diverse view of the object.
+        """
+        cap = self.cfg.max_exemplars
+        if cap <= 0:
+            return
+        track.exemplars.append(emb)
+        if len(track.exemplars) <= cap:
+            return
+        others = np.stack(track.exemplars[:-1])
+        track.exemplars.pop(int(np.argmax(others @ emb)))
+
     def _match(
         self,
         track_idx: list[int],
@@ -265,7 +322,7 @@ class ByteTracker:
         if track.state == "tentative" and track.hits >= self.cfg.min_hits:
             track.state = "active"
         if emb is not None:
-            track.embedding = _normalize(emb if track.embedding is None else (track.embedding + emb) / 2.0)
+            self.add_embedding(track, emb)
 
     def _spawn(self, det: Detection, emb: np.ndarray | None) -> None:
         box = np.array(det.box, dtype=np.float32)
@@ -279,9 +336,10 @@ class ByteTracker:
             hits=1,
             time_since_update=0,
             state="tentative",
-            embedding=_normalize(emb) if emb is not None else None,
             _kf=kf,
         )
+        if emb is not None:
+            self.add_embedding(track, emb)
         if self.cfg.min_hits <= 1:
             track.state = "active"
         self._next_id += 1

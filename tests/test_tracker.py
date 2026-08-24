@@ -6,7 +6,7 @@ import numpy as np
 
 from vision_memory.config import TrackerConfig
 from vision_memory.detector import Detection
-from vision_memory.tracker import ByteTracker, iou_matrix
+from vision_memory.tracker import ByteTracker, iou_matrix, should_embed
 
 
 def _cfg(**overrides) -> TrackerConfig:
@@ -17,6 +17,8 @@ def _cfg(**overrides) -> TrackerConfig:
         high_conf=0.5,
         low_conf=0.1,
         appearance_weight=0.0,
+        embed_every_n=2,
+        max_exemplars=16,
     )
     base.update(overrides)
     return TrackerConfig(**base)
@@ -81,6 +83,77 @@ def test_iou_matrix_known_values() -> None:
     assert np.isclose(m[0, 0], 1.0)
     assert np.isclose(m[0, 1], 0.0)
     assert np.isclose(m[0, 2], 50.0 / 150.0)
+
+
+def _emb(rng: np.random.Generator, dim: int = 8) -> np.ndarray:
+    v = rng.normal(size=dim).astype(np.float32)
+    return v / np.linalg.norm(v)
+
+
+def test_should_embed_follows_embed_every_n() -> None:
+    assert should_embed(1, 2)  # first association always embeds
+    assert should_embed(2, 2)
+    assert not should_embed(3, 2)
+    assert should_embed(4, 2)
+    assert not should_embed(5, 0)  # 0 disables embedding
+    assert not should_embed(0, 2)
+
+
+def test_exemplars_accumulate_for_embedded_matches() -> None:
+    tracker = ByteTracker(_cfg(min_hits=1))
+    rng = np.random.default_rng(0)
+    for i in range(4):
+        tracker.update([_det(10.0 + 5 * i, 10.0)], embeddings={0: _emb(rng)})
+    track = tracker._tracks[0]
+    assert len(track.exemplars) == 4
+    assert all(np.isclose(np.linalg.norm(e), 1.0) for e in track.exemplars)
+    assert track.embedding is not None
+
+
+def test_track_without_embeddings_has_empty_exemplars() -> None:
+    tracker = ByteTracker(_cfg(min_hits=1))
+    for i in range(4):
+        tracker.update([_det(10.0 + 5 * i, 10.0)])
+    track = tracker._tracks[0]
+    assert track.exemplars == []
+    assert track.embedding is None
+
+
+def test_unmatched_frames_add_no_exemplars() -> None:
+    tracker = ByteTracker(_cfg(min_hits=1))
+    rng = np.random.default_rng(1)
+    tracker.update([_det(10.0, 10.0)], embeddings={0: _emb(rng)})
+    for _ in range(3):
+        tracker.update(None)
+    assert len(tracker._tracks[0].exemplars) == 1
+    assert tracker.due_for_embedding() == []
+
+
+def test_exemplar_buffer_respects_cap() -> None:
+    tracker = ByteTracker(_cfg(min_hits=1, max_exemplars=3))
+    rng = np.random.default_rng(2)
+    for i in range(12):
+        tracker.update([_det(10.0 + 5 * i, 10.0)], embeddings={0: _emb(rng)})
+    assert len(tracker._tracks[0].exemplars) == 3
+
+
+def test_due_for_embedding_tracks_the_schedule() -> None:
+    tracker = ByteTracker(_cfg(min_hits=1, embed_every_n=2))
+    tracker.update([_det(10.0, 10.0)])
+    assert [t.hits for t in tracker.due_for_embedding()] == [1]
+    tracker.update([_det(15.0, 10.0)])
+    assert [t.hits for t in tracker.due_for_embedding()] == [2]
+    tracker.update([_det(20.0, 10.0)])
+    assert tracker.due_for_embedding() == []
+
+
+def test_add_embedding_fills_exemplars_after_update() -> None:
+    tracker = ByteTracker(_cfg(min_hits=1))
+    rng = np.random.default_rng(3)
+    active = tracker.update([_det(10.0, 10.0)])
+    for track in tracker.due_for_embedding():
+        tracker.add_embedding(track, _emb(rng))
+    assert len(active[0].exemplars) == 1
 
 
 def test_appearance_weight_breaks_iou_tie_with_embedding() -> None:
