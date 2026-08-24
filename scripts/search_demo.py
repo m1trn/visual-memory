@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from similarity_demo import fetch_samples  # noqa: E402
-from vision_memory.config import load_encoder_config, load_raw  # noqa: E402
+from vision_memory.config import load_encoder_config, load_search_config  # noqa: E402
 from vision_memory.encoder import Encoder  # noqa: E402
 from vision_memory.search import VectorIndex  # noqa: E402
 
@@ -23,7 +23,7 @@ from vision_memory.search import VectorIndex  # noqa: E402
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dir", default="data/samples")
-    ap.add_argument("--k", type=int, default=load_raw()["search"]["default_k"])
+    ap.add_argument("--k", type=int, default=load_search_config().default_k)
     args = ap.parse_args()
 
     paths = fetch_samples(Path(args.dir))
@@ -33,7 +33,9 @@ def main() -> None:
 
     index = VectorIndex(enc.dim)
     index.add(embs, ids=range(len(names)))
-    out = Path(load_raw()["memory"]["index_path"])
+    # A scratch path on purpose: writing to the configured index would leave a
+    # stale file beside the real database, whose exemplar ids restart at 1.
+    out = Path("data/search_demo.faiss")
     index.save(out)
     index = VectorIndex.load(out)
     print(f"indexed {len(index)} vectors, saved+reloaded {out}\n")
