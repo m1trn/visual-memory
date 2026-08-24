@@ -7,6 +7,7 @@ Usage: python scripts/track_demo.py [--video PATH] [--max-frames N]
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import statistics
 import sys
 import time
@@ -58,7 +59,8 @@ def main() -> None:
 
     det_times: list[float] = []
     trk_times: list[float] = []
-    confirmed_ids: set[int] = set()
+    confirmed: dict[int, str] = {}
+    stale_skipped = 0
     lost_count = 0
     frame_idx = 0
     t_start = time.perf_counter()
@@ -80,7 +82,12 @@ def main() -> None:
         lost_count += len(tracker.pop_lost())
 
         for trk in active:
-            confirmed_ids.add(trk.id)
+            # A track that has missed a whole detector cycle is coasting on
+            # prediction alone; drawing it puts a box where nothing was seen.
+            if trk.time_since_update > video_cfg.detect_every_n_frames:
+                stale_skipped += 1
+                continue
+            confirmed[trk.id] = trk.label
             x1, y1, x2, y2 = (int(v) for v in trk.box)
             color = _color(trk.id)
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
@@ -98,7 +105,10 @@ def main() -> None:
         print(f"  detector: {statistics.median(det_times) * 1000:.1f} ms/frame (median, {len(det_times)} runs)")
     if trk_times:
         print(f"  tracker:  {statistics.median(trk_times) * 1000:.1f} ms/frame (median, {len(trk_times)} runs)")
-    print(f"  confirmed identities: {len(confirmed_ids)}")
+    by_label = Counter(confirmed.values())
+    print(f"  confirmed identities: {len(confirmed)} " +
+          "(" + ", ".join(f"{n} {lbl}" for lbl, n in by_label.most_common()) + ")")
+    print(f"  stale boxes not drawn: {stale_skipped}")
     print(f"  lost tracks: {lost_count}")
     print(f"annotated -> {out_path}")
 
