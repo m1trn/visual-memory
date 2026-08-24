@@ -6,3 +6,7 @@ __pycache__/
 data/
 *.faiss
 *.db
+
+# planning and implementation notes stay local; only the README ships
+*.md
+!README.md
