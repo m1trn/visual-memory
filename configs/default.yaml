@@ -22,3 +22,4 @@ video:
 anomaly:
   method: knn
   k: 5
+  shrinkage: 0.1
