@@ -29,6 +29,9 @@ class AnomalyConfig:
     method: str
     k: int
     shrinkage: float
+    n_estimators: int
+    nu: float
+    seed: int
 
 
 def load_raw(path: Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:

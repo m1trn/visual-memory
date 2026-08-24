@@ -11,6 +11,8 @@ from __future__ import annotations
 from typing import Protocol
 
 import numpy as np
+from sklearn.ensemble import IsolationForest
+from sklearn.svm import OneClassSVM
 
 from vision_memory.config import AnomalyConfig
 
@@ -97,10 +99,52 @@ class MahalanobisDetector:
         return np.sqrt((z * z).sum(axis=0)).astype(np.float32, copy=False)
 
 
+class IsolationForestDetector:
+    """Isolation Forest: outliers are isolated by fewer random splits.
+
+    Wraps scikit-learn; score is the negated ``score_samples`` so higher
+    means more anomalous, matching the protocol.
+    """
+
+    def __init__(self, n_estimators: int, seed: int) -> None:
+        self._model = IsolationForest(n_estimators=n_estimators, random_state=seed)
+
+    def fit(self, normal: np.ndarray) -> None:
+        """Fit the forest on normal embeddings."""
+        self._model.fit(np.ascontiguousarray(normal, dtype=np.float32))
+
+    def score(self, x: np.ndarray) -> np.ndarray:
+        """Negated isolation score, higher = more anomalous."""
+        return (-self._model.score_samples(np.ascontiguousarray(x, dtype=np.float32))).astype(np.float32)
+
+
+class OneClassSVMDetector:
+    """One-Class SVM with RBF kernel: learns a boundary around the normals.
+
+    ``nu`` bounds the fraction of normals allowed outside the boundary.
+    Score is the negated signed distance to the boundary.
+    """
+
+    def __init__(self, nu: float) -> None:
+        self._model = OneClassSVM(kernel="rbf", gamma="scale", nu=nu)
+
+    def fit(self, normal: np.ndarray) -> None:
+        """Fit the boundary on normal embeddings."""
+        self._model.fit(np.ascontiguousarray(normal, dtype=np.float32))
+
+    def score(self, x: np.ndarray) -> np.ndarray:
+        """Negated signed distance to the boundary, higher = more anomalous."""
+        return (-self._model.decision_function(np.ascontiguousarray(x, dtype=np.float32))).astype(np.float32)
+
+
 def build_detector(cfg: AnomalyConfig) -> AnomalyDetector:
-    """Construct the detector named by ``cfg.method`` ('knn' or 'mahalanobis')."""
+    """Construct the detector named by ``cfg.method`` ('knn', 'mahalanobis', 'isoforest', 'ocsvm')."""
     if cfg.method == "knn":
         return KNNDetector(k=cfg.k)
     if cfg.method == "mahalanobis":
         return MahalanobisDetector(shrinkage=cfg.shrinkage)
+    if cfg.method == "isoforest":
+        return IsolationForestDetector(n_estimators=cfg.n_estimators, seed=cfg.seed)
+    if cfg.method == "ocsvm":
+        return OneClassSVMDetector(nu=cfg.nu)
     raise ValueError(f"unknown anomaly method: {cfg.method!r}")

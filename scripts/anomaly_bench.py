@@ -91,7 +91,7 @@ def main() -> None:
 
     cfg = load_anomaly_config()
     print(f"{'method':<12}{'AUROC':>8}{'mean(normal)':>14}{'mean(anom)':>12}{'us/vec':>10}")
-    for method in ("knn", "mahalanobis"):
+    for method in ("knn", "mahalanobis", "isoforest", "ocsvm"):
         det = build_detector(replace(cfg, method=method))
         det.fit(fit_emb)
 

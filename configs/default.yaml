@@ -23,3 +23,6 @@ anomaly:
   method: knn
   k: 5
   shrinkage: 0.1
+  n_estimators: 100   # isoforest
+  nu: 0.1             # ocsvm: max fraction of normals outside boundary
+  seed: 0

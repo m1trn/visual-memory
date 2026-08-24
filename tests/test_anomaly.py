@@ -1,7 +1,8 @@
 import numpy as np
 import pytest
 
-from vision_memory.anomaly import KNNDetector, MahalanobisDetector, build_detector
+from vision_memory.anomaly import (IsolationForestDetector, KNNDetector, MahalanobisDetector,
+                                   OneClassSVMDetector, build_detector)
 from vision_memory.config import AnomalyConfig
 
 
@@ -61,15 +62,15 @@ def test_mahalanobis_handles_n_less_than_dim() -> None:
 
 
 def test_build_detector_knn_and_mahalanobis() -> None:
-    knn = build_detector(AnomalyConfig(method="knn", k=5, shrinkage=0.1))
+    knn = build_detector(AnomalyConfig(method="knn", k=5, shrinkage=0.1, n_estimators=50, nu=0.1, seed=0))
     assert isinstance(knn, KNNDetector)
-    maha = build_detector(AnomalyConfig(method="mahalanobis", k=5, shrinkage=0.1))
+    maha = build_detector(AnomalyConfig(method="mahalanobis", k=5, shrinkage=0.1, n_estimators=50, nu=0.1, seed=0))
     assert isinstance(maha, MahalanobisDetector)
 
 
 def test_build_detector_rejects_unknown_method() -> None:
     with pytest.raises(ValueError):
-        build_detector(AnomalyConfig(method="bogus", k=5, shrinkage=0.1))
+        build_detector(AnomalyConfig(method="bogus", k=5, shrinkage=0.1, n_estimators=50, nu=0.1, seed=0))
 
 
 def test_degenerate_fit_sets_raise() -> None:
@@ -80,3 +81,18 @@ def test_degenerate_fit_sets_raise() -> None:
         MahalanobisDetector(shrinkage=0.1).fit(v)
     with pytest.raises(ValueError):
         MahalanobisDetector(shrinkage=0.1).fit(np.repeat(v, 3, axis=0))
+
+
+@pytest.mark.parametrize("det", [IsolationForestDetector(n_estimators=50, seed=0), OneClassSVMDetector(nu=0.1)])
+def test_sklearn_detectors_separate_outliers(det) -> None:
+    rng = np.random.default_rng(0)
+    normal = rng.normal(0, 0.05, (60, 8)) + np.array([1.0] + [0.0] * 7)
+    normal /= np.linalg.norm(normal, axis=1, keepdims=True)
+    outliers = rng.standard_normal((10, 8))
+    outliers /= np.linalg.norm(outliers, axis=1, keepdims=True)
+    det.fit(normal[:50])
+    s_norm, s_out = det.score(normal[50:]), det.score(outliers)
+    assert s_out.dtype == np.float32 and s_out.shape == (10,)
+    # IsolationForest only splits inside the training range, so single far points can
+    # look like boundary normals; require separation on average, not per point.
+    assert s_out.mean() > s_norm.mean()
