@@ -12,6 +12,7 @@ Usage: python scripts/reid_demo.py [--video PATH] [--max-frames N] [--db PATH] [
 from __future__ import annotations
 
 import argparse
+import os
 import pickle
 import sys
 import urllib.request
@@ -108,7 +109,11 @@ def main() -> None:
     size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
     out_path = Path("data/tracking") / f"{args.video.stem}_reid.mp4"
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    writer = cv2.VideoWriter(str(out_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
+    # Write under a temporary name and rename only once the container has been
+    # finalized. An interrupted run otherwise leaves an mp4 with no moov atom,
+    # which no player will open, in place of the last good one.
+    part_path = out_path.with_suffix(".part.mp4")
+    writer = cv2.VideoWriter(str(part_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
     # A track is only resolved once it dies, max_age frames after its last
     # sighting, so frames are held back that long before being written.
     lag, fresh = tracker_cfg.max_age + 1, video_cfg.detect_every_n_frames
@@ -153,6 +158,7 @@ def main() -> None:
         memory.save()
     cap.release()
     writer.release()
+    os.replace(part_path, out_path)
 
     print(f"{args.video.name}: {frame_idx} frames, threshold {threshold:.3f} (calibrated on track/identity scores)")
     print(f"  tracks lost: {lost_count}   bound to existing: {rebound}   created new: {created}")

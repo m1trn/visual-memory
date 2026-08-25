@@ -34,7 +34,16 @@ class KalmanBox:
         self.P = np.eye(8, dtype=np.float64) * 10.0
 
         self._F = np.eye(8, dtype=np.float64)
-        for i in range(4):
+        # Position extrapolates with velocity; SIZE DELIBERATELY DOES NOT.
+        # While a track coasts, the detector's last look at a partly hidden
+        # object is a shrunken box, so the filter learns a negative size
+        # velocity and then projects it forward: measured on this footage a
+        # predicted height ran 17.5 -> 8.6 -> -0.4 -> -9.4 px over four frames.
+        # A negative-area box has zero IoU with every detection, and its
+        # collapsed width also inflates the size-normalized centre distance, so
+        # both halves of the gate fail exactly as the object reappears. An
+        # object does not shrink because it is hidden, so size is held instead.
+        for i in range(2):
             self._F[i, i + 4] = 1.0
         self._H = np.zeros((4, 8), dtype=np.float64)
         for i in range(4):
@@ -48,6 +57,10 @@ class KalmanBox:
         """Advance the state by one frame and return the predicted xyxy box."""
         self.x = self._F @ self.x
         self.P = self._F @ self.P @ self._F.T + self._Q
+        # Belt and braces: a box must always have positive area, whatever the
+        # filter believes, or it silently drops out of every geometric test.
+        self.x[2] = max(float(self.x[2]), _MIN_BOX_SIDE)
+        self.x[3] = max(float(self.x[3]), _MIN_BOX_SIDE)
         return _cxcywh_to_xyxy(self.x[:4])
 
     def update(self, xyxy: np.ndarray) -> None:
@@ -100,6 +113,7 @@ def iou_matrix(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return np.divide(inter, union, out=np.zeros_like(inter), where=union > 0)
 
 
+_MIN_BOX_SIDE = 2.0  # px; a predicted box below this has no geometry left to match on
 _IMPOSSIBLE = 1e6  # cost of a pairing the gate will reject anyway
 _TIE_BREAK = 1e-3  # weight of the centre term relative to IoU in the cost
 

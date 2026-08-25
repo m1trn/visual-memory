@@ -238,3 +238,18 @@ def test_a_detection_covering_two_tracks_is_withheld_rather_than_guessed() -> No
     kept = tracker.update([_det(1.0, 0.0)])
     # Neither track may claim it: both coast, and no id changes hands.
     assert all(t.time_since_update > 0 for t in kept if t.id in (1, 2))
+
+
+def test_a_coasting_track_never_collapses_to_a_degenerate_box() -> None:
+    """A hidden object does not shrink, and a zero-area box matches nothing."""
+    tracker = ByteTracker(_cfg(min_hits=1))
+    # Feed a box that the detector reports as shrinking, as happens when a
+    # person is progressively occluded, then let the track coast.
+    for k in range(4):
+        tracker.update([Detection(box=(0.0, 0.0, 20.0, 60.0 - 15.0 * k), score=0.9,
+                                  class_id=0, label="obj")])
+    for _ in range(12):
+        tracker.update([])
+    for track in tracker._tracks:
+        assert track.box[2] - track.box[0] > 0
+        assert track.box[3] - track.box[1] > 0

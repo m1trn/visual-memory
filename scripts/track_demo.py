@@ -7,6 +7,7 @@ Usage: python scripts/track_demo.py [--video PATH] [--max-frames N]
 from __future__ import annotations
 
 import argparse
+import os
 from collections import Counter
 import statistics
 import sys
@@ -56,7 +57,11 @@ def main() -> None:
     out_dir = Path("data/tracking")
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{args.video.stem}_tracked.mp4"
-    writer = cv2.VideoWriter(str(out_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
+    # Write under a temporary name and rename only once the container has
+    # been finalized; an interrupted run otherwise replaces the last good
+    # video with an mp4 that has no moov atom and will not open.
+    part_path = out_path.with_suffix('.part.mp4')
+    writer = cv2.VideoWriter(str(part_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
 
     det_times: list[float] = []
     trk_times: list[float] = []
@@ -106,6 +111,7 @@ def main() -> None:
     wall = time.perf_counter() - t_start
     cap.release()
     writer.release()
+    os.replace(part_path, out_path)
 
     print(f"{args.video.name}: {frame_idx} frames in {wall:.1f}s ({frame_idx / wall:.1f} fps)")
     if det_times:
