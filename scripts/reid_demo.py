@@ -33,7 +33,8 @@ from vision_memory.config import (  # noqa: E402
 from vision_memory.detector import YoloOnnxDetector  # noqa: E402
 from vision_memory.encoder import Encoder  # noqa: E402
 from vision_memory.memory import VisualMemory  # noqa: E402
-from vision_memory.reid import Verifier, balance, build_verifier, mine_pairs, split_by_group  # noqa: E402
+from vision_memory.reid import (Verifier, balance, build_verifier,
+                                calibrate_identity_threshold, mine_pairs, split_by_group)  # noqa: E402
 from vision_memory.reidentifier import ReIdentifier, Resolution  # noqa: E402
 from vision_memory.tracker import ByteTracker  # noqa: E402
 
@@ -42,7 +43,7 @@ _DEFAULT_URL = "https://raw.githubusercontent.com/opencv/opencv/4.x/samples/data
 _Boxes = list[tuple[int, np.ndarray, str]]
 
 
-def _fit_verifier(pairs_path: Path) -> tuple[Verifier, bool]:
+def _fit_verifier(pairs_path: Path) -> tuple[Verifier, float]:
     """Build the verifier, learning its threshold from cached pairs when they exist."""
     cfg = load_reid_config()
     verifier = build_verifier(cfg)
@@ -59,7 +60,13 @@ def _fit_verifier(pairs_path: Path) -> tuple[Verifier, bool]:
     if not train_mask.any() or len(np.unique(y[train_mask])) < 2:
         raise SystemExit("mined pairs do not contain both classes; try a longer clip")
     verifier.fit(a[train_mask], b[train_mask], y[train_mask])
-    return verifier, True
+    # The verifier's own boundary is fitted to pair scores; the binding decision
+    # compares an aggregate, so it needs a boundary fitted to that instead.
+    threshold, n_pos, n_neg = calibrate_identity_threshold(
+        observations, seen_on, cfg.observation_quantile, load_memory_config().exemplars_per_identity
+    )
+    print(f"calibrated on {n_pos} same-object and {n_neg} provably-different track/identity examples")
+    return verifier, threshold
 
 
 def _flush(writer: cv2.VideoWriter, pending: list[tuple[np.ndarray, _Boxes]],
@@ -94,7 +101,7 @@ def main() -> None:
     mem_cfg = replace(load_memory_config(), db_path=str(args.db), index_path=str(args.index))
     detector, encoder = YoloOnnxDetector(load_detector_config()), Encoder(load_encoder_config())
     tracker = ByteTracker(tracker_cfg)
-    verifier, learned = _fit_verifier(_DEFAULT_CACHE)
+    verifier, threshold = _fit_verifier(_DEFAULT_CACHE)
     cap = cv2.VideoCapture(str(args.video))
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
@@ -109,7 +116,7 @@ def main() -> None:
     first_frame: dict[int, int] = {}
     lost_count = rebound = created = frame_idx = 0
     with VisualMemory(mem_cfg, encoder.dim) as memory:
-        reid = ReIdentifier(memory, verifier)
+        reid = ReIdentifier(memory, verifier, threshold=threshold)
         while frame_idx < args.max_frames:
             ok, frame = cap.read()
             if not ok:
@@ -146,8 +153,7 @@ def main() -> None:
     cap.release()
     writer.release()
 
-    print(f"{args.video.name}: {frame_idx} frames, threshold {verifier.threshold:.3f} "
-          f"({'learned from mined pairs' if learned else 'config default'})")
+    print(f"{args.video.name}: {frame_idx} frames, threshold {threshold:.3f} (calibrated on track/identity scores)")
     print(f"  tracks lost: {lost_count}   bound to existing: {rebound}   created new: {created}")
     print(f"  identities in {mem_cfg.db_path}: {identity_count}\nannotated -> {out_path}")
 

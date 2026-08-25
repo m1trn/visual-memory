@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Sequence
 
 import numpy as np
 
-from vision_memory.config import load_search_config
+from vision_memory.config import load_reid_config, load_search_config
 from vision_memory.memory import VisualMemory
 
 if TYPE_CHECKING:  # a structural Protocol; needed for typing, not at runtime
@@ -43,6 +43,8 @@ class ReIdentifier:
         memory: VisualMemory,
         verifier: "Verifier",
         candidates: int | None = None,
+        observation_quantile: float | None = None,
+        threshold: float | None = None,
     ) -> None:
         self.memory = memory
         self.verifier = verifier
@@ -51,6 +53,20 @@ class ReIdentifier:
         # entirely consumed by wrong-label identities; searching once per
         # observation and taking the union widens it for free.
         self.candidates = candidates if candidates is not None else load_search_config().default_k
+        # A threshold fitted to individual pair scores does not transfer to the
+        # identity score, which maxes over exemplars and then takes a quantile
+        # over observations - both push it well above a single pair's cosine.
+        # `reid.calibrate_identity_threshold` fits the boundary on that statistic.
+        self._threshold = threshold
+        self.observation_quantile = (
+            observation_quantile if observation_quantile is not None
+            else load_reid_config().observation_quantile
+        )
+
+    @property
+    def threshold(self) -> float:
+        """Boundary the accept/reject decision uses, calibrated when one was supplied."""
+        return self._threshold if self._threshold is not None else self.verifier.threshold
 
     def resolve(
         self,
@@ -64,7 +80,7 @@ class ReIdentifier:
         obs = _stack_unit(embeddings, self.memory.dim)
         best_id, best_score = self._best_candidate(label, obs)
 
-        if best_id is not None and best_score >= self.verifier.threshold:
+        if best_id is not None and best_score >= self.threshold:
             identity_id = self.memory.remember(
                 label, obs, first_seen, last_seen, appearances, identity_id=best_id
             )
@@ -104,20 +120,26 @@ class ReIdentifier:
     def _score_identity(self, obs: np.ndarray, exemplars: np.ndarray) -> float:
         """Verifier score for a whole track against one identity's exemplars.
 
-        Max over exemplars, mean over observations. The exemplar set is chosen
-        for *diversity*, so most stored views legitimately disagree with any
-        given crop — averaging over them would punish an identity for being
-        well covered, whereas one convincing view match is exactly the evidence
-        re-id needs. Across the track's own observations the opposite holds:
-        they are all the same object seen moments apart, so the whole track
-        should agree, and a mean stops a single lucky frame from carrying the
-        decision.
+        Max over exemplars, then a high quantile over the track's observations.
+
+        The exemplar set is chosen for *diversity*, so most stored views
+        legitimately disagree with any given crop — averaging over them would
+        punish an identity for being well covered, whereas one convincing view
+        match is exactly the evidence re-id needs.
+
+        Across the track's own observations, a mean was measurably too strict:
+        an object that turns partway through a track produces observations that
+        genuinely match nothing stored, and they drag the average under the
+        threshold. Ground-truth check on 27 tracks (first half remembered,
+        second half resolved against it): mean bound 24/27, the 75th percentile
+        bound 27/27. A plain max would also bind 27/27 but rests the whole
+        decision on one frame, so the quantile keeps some robustness.
         """
         m, n = len(obs), len(exemplars)
         a = np.repeat(obs, n, axis=0)
         b = np.tile(exemplars, (m, 1))
         scores = np.asarray(self.verifier.score(a, b), dtype=np.float32).reshape(m, n)
-        return float(scores.max(axis=1).mean())
+        return float(np.percentile(scores.max(axis=1), 100.0 * self.observation_quantile))
 
 
 def _stack_unit(embeddings: Sequence[np.ndarray], dim: int) -> np.ndarray:

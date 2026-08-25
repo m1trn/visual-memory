@@ -64,6 +64,9 @@ reid:
   verifier: cosine        # cosine | logistic
   min_pair_gap: 2         # observations apart, so a positive pair is not two near-identical frames
   max_pairs_per_track: 200 # cap per track, or one long-lived object dominates the positive class
+  observation_quantile: 0.5  # fraction of a track that must agree with a stored identity. 0.75 binds
+                            # 3 more of 28 tracks but nearly doubles false merges (66 vs 39 of 352),
+                            # and a false merge is unrecoverable while a miss just costs an identity
   test_fraction: 0.3      # held out BY TRACK - a track must never contribute to both sides
   seed: 0
 

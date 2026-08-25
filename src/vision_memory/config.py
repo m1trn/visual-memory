@@ -57,6 +57,7 @@ class ReidConfig:
     verifier: str
     min_pair_gap: int
     max_pairs_per_track: int
+    observation_quantile: float
     test_fraction: float
     seed: int
 

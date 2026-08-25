@@ -22,6 +22,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 from vision_memory.config import ReidConfig
+from vision_memory.memory import select_diverse
 
 # Cap on exhaustive negative-pair enumeration; above it, negatives are sampled.
 _MAX_ENUMERATED_OBSERVATIONS = 512
@@ -147,6 +148,62 @@ def balance(y: np.ndarray, mask: np.ndarray, rng: np.random.Generator) -> np.nda
     out[neg[_subsample(len(neg), n, rng)]] = True
     return out
 
+
+
+def identity_score(query: np.ndarray, exemplars: np.ndarray, quantile: float) -> float:
+    """Score a whole track against one identity: max over exemplars, quantile over observations."""
+    per_observation = (np.asarray(query, np.float32) @ np.asarray(exemplars, np.float32).T).max(axis=1)
+    return float(np.percentile(per_observation, 100.0 * quantile))
+
+
+def calibrate_identity_threshold(
+    tracks: Mapping[int, Sequence[np.ndarray]],
+    frames: Mapping[int, Sequence[int]],
+    quantile: float,
+    exemplars_per_identity: int,
+) -> tuple[float, int, int]:
+    """Learn the accept/reject boundary on track-versus-identity scores.
+
+    A threshold fitted to individual pair scores does not transfer to this
+    decision: the identity score takes a max over K exemplars and then a high
+    quantile over the track's observations, and both push it well above a single
+    pair's cosine. Applying the pair boundary here accepts far too much.
+
+    Ground truth comes from the tracker itself. A track's later observations
+    against an identity built from its own earlier ones is a positive. A track
+    against the identity of a track that was on screen at the same time is a
+    negative, and provably so — one detection cannot be two tracks in one frame.
+
+    Returns ``(threshold, n_positive, n_negative)``.
+    """
+    usable = {t: _stack(v) for t, v in tracks.items() if len(v) >= 4 and len(frames.get(t, ()))}
+    if len(usable) < 2:
+        raise ValueError("calibration needs at least two tracks with several observations each")
+    span = {t: (min(frames[t]), max(frames[t])) for t in usable}
+    half = {t: len(v) // 2 for t, v in usable.items()}
+
+    # Each identity is represented the way memory would store it: a diverse subset.
+    stored = {}
+    for t, v in usable.items():
+        early = v[: half[t]]
+        stored[t] = early[select_diverse(early, exemplars_per_identity)]
+
+    pos, neg = [], []
+    for t, v in usable.items():
+        query = v[half[t] :]
+        pos.append(identity_score(query, stored[t], quantile))
+        for other in usable:
+            if other == t:
+                continue
+            (a0, a1), (b0, b1) = span[t], span[other]
+            if a0 <= b1 and b0 <= a1:  # co-alive, so provably a different object
+                neg.append(identity_score(query, stored[other], quantile))
+    if not pos or not neg:
+        raise ValueError("calibration needs both same-object and different-object examples")
+
+    scores = np.array(pos + neg, dtype=np.float32)
+    labels = np.array([1] * len(pos) + [0] * len(neg), dtype=np.int64)
+    return _youden_threshold(scores, labels), len(pos), len(neg)
 
 class Verifier(Protocol):
     """Decide whether two embeddings show the same object."""
