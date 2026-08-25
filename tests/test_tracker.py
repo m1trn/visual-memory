@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 
 import numpy as np
+import pytest
 
 from vision_memory.config import TrackerConfig
 from vision_memory.detector import Detection
@@ -16,6 +17,7 @@ def _cfg(**overrides) -> TrackerConfig:
         iou_threshold=0.3,
         high_conf=0.5,
         low_conf=0.1,
+        max_centre_distance=2.0,
         appearance_weight=0.0,
         embed_every_n=2,
         max_exemplars=16,
@@ -184,3 +186,34 @@ def test_appearance_weight_breaks_iou_tie_with_embedding() -> None:
     dist_b_to_b = np.linalg.norm(by_id[id_b] - target_b)
     assert dist_a_to_a < dist_a_to_b
     assert dist_b_to_b < dist_b_to_a
+
+
+def test_centre_gate_matches_a_fast_object_that_no_longer_overlaps() -> None:
+    """A jump larger than the box still associates when the centres stay close."""
+    tracker = ByteTracker(_cfg(min_hits=1))
+    tracker.update([_det(0.0, 0.0)])
+    # 30 px jump on a 20 px box: zero IoU, so only the centre gate can match it.
+    kept = tracker.update([_det(30.0, 0.0)])
+    assert [t.id for t in kept] == [1]
+
+
+def test_centre_gate_refuses_a_jump_beyond_its_reach() -> None:
+    tracker = ByteTracker(_cfg(min_hits=1, max_centre_distance=1.0))
+    tracker.update([_det(0.0, 0.0)])
+    kept = tracker.update([_det(200.0, 200.0)])
+    by_id = {t.id: t for t in kept}
+    assert 2 in by_id and by_id[2].time_since_update == 0  # the far box is a new object
+    assert by_id[1].time_since_update > 0  # the original track went unmatched, not stolen
+
+
+def test_centre_distance_is_scale_free() -> None:
+    from vision_memory.tracker import centre_distance_matrix
+
+    small = np.array([[0.0, 0.0, 10.0, 10.0]])
+    small_moved = np.array([[10.0, 0.0, 20.0, 10.0]])
+    big = np.array([[0.0, 0.0, 100.0, 100.0]])
+    big_moved = np.array([[100.0, 0.0, 200.0, 100.0]])
+    # Same displacement in box widths must give the same number at either scale.
+    assert centre_distance_matrix(small, small_moved)[0, 0] == pytest.approx(
+        centre_distance_matrix(big, big_moved)[0, 0]
+    )

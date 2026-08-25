@@ -100,6 +100,27 @@ def iou_matrix(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return np.divide(inter, union, out=np.zeros_like(inter), where=union > 0)
 
 
+def centre_distance_matrix(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Centre separation between boxes ``a`` (N,4) and ``b`` (M,4), in box widths.
+
+    IoU is useless for objects that move further between detections than they
+    are wide — every candidate scores exactly zero and the assignment becomes a
+    coin flip. Normalizing by box size keeps the measure scale free, so the same
+    threshold works for a distant pedestrian and a nearby one.
+    """
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+    if len(a) == 0 or len(b) == 0:
+        return np.zeros((len(a), len(b)), dtype=np.float64)
+    ac = np.stack([(a[:, 0] + a[:, 2]) / 2, (a[:, 1] + a[:, 3]) / 2], axis=1)
+    bc = np.stack([(b[:, 0] + b[:, 2]) / 2, (b[:, 1] + b[:, 3]) / 2], axis=1)
+    dist = np.linalg.norm(ac[:, None, :] - bc[None, :, :], axis=2)
+    a_size = np.maximum(a[:, 2] - a[:, 0], 1.0)
+    b_size = np.maximum(b[:, 2] - b[:, 0], 1.0)
+    scale = (a_size[:, None] + b_size[None, :]) / 2.0
+    return dist / scale
+
+
 def _xyxy_to_cxcywh(box: np.ndarray) -> tuple[float, float, float, float]:
     x1, y1, x2, y2 = box
     return (x1 + x2) / 2.0, (y1 + y2) / 2.0, x2 - x1, y2 - y1
@@ -285,6 +306,12 @@ class ByteTracker:
         t_boxes = np.array([self._tracks[i].box for i in track_idx], dtype=np.float64)
         d_boxes = np.array([detections[i].box for i in det_idx], dtype=np.float64)
         iou = iou_matrix(t_boxes, d_boxes)
+        centre = centre_distance_matrix(t_boxes, d_boxes)
+        # Half overlap, half proximity: without the second term every
+        # non-overlapping pair costs exactly 1.0 and Hungarian breaks the tie
+        # arbitrarily instead of preferring the nearest candidate.
+        reach = max(self.cfg.max_centre_distance, 1e-6)
+        motion = 0.5 * (1.0 - iou) + 0.5 * np.minimum(centre / reach, 1.0)
 
         lam = self.cfg.appearance_weight if use_appearance else 0.0
         if lam > 0.0:
@@ -292,16 +319,17 @@ class ByteTracker:
             det_embs = [embeddings.get(i) for i in det_idx]
             cos = _cosine_matrix(track_embs, det_embs)
             has_cos = ~np.isnan(cos)
-            cost = (1.0 - iou)
-            cost = np.where(has_cos, (1 - lam) * (1 - iou) + lam * (1 - cos), cost)
+            cost = np.where(has_cos, (1 - lam) * motion + lam * (1 - cos), motion)
         else:
-            cost = 1.0 - iou
+            cost = motion
 
         row, col = linear_sum_assignment(cost)
         matches: dict[int, int] = {}
         matched_t, matched_d = set(), set()
         for r, c in zip(row, col):
-            if iou[r, c] < self.cfg.iou_threshold:
+            # Either kind of evidence is enough: boxes that overlap, or centres
+            # close enough relative to their size that nothing else is plausible.
+            if iou[r, c] < self.cfg.iou_threshold and centre[r, c] > self.cfg.max_centre_distance:
                 continue
             matches[track_idx[r]] = det_idx[c]
             matched_t.add(r)

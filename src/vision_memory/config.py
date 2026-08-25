@@ -36,6 +36,7 @@ class TrackerConfig:
     max_age: int
     min_hits: int
     iou_threshold: float
+    max_centre_distance: float
     high_conf: float
     low_conf: float
     appearance_weight: float

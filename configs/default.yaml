@@ -21,6 +21,7 @@ tracker:
   max_age: 6              # frames without a match before a track is lost; ~2x detect_every_n_frames (higher only breeds ghost boxes coasting on prediction)
   min_hits: 2             # matches before a track is drawn; 1 admits detector junk (67 ids, 37 spurious), 3 only adds latency
   iou_threshold: 0.3      # min IoU to accept a match
+  max_centre_distance: 2.0  # or centres within this many box widths; IoU alone is 0 for objects that move further than they are wide
   high_conf: 0.5           # detections >= this go to the first association pass
   low_conf: 0.1            # detections in [low_conf, high_conf) go to the second (ByteTrack) pass
   appearance_weight: 0.0  # lambda in cost = (1-lambda)*(1-IoU) + lambda*(1-cosine); 0 = motion only
