@@ -56,6 +56,7 @@ class MemoryConfig:
 class ReidConfig:
     verifier: str
     min_pair_gap: int
+    max_pairs_per_track: int
     test_fraction: float
     seed: int
 

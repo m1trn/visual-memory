@@ -1,9 +1,6 @@
 # All tunables live here. Never hardcode these in modules.
 
-
-
 encoder:
-
   backend: dinov2          # dinov2 (Meta, ViT-S/14, 384-dim) | radio (NVIDIA C-RADIO, 2304-dim)
 
   # torch.hub name; small = ViT-S/14, 384-dim embeddings
@@ -16,10 +13,7 @@ encoder:
 
   batch_size: 16
 
-
-
 detector:
-
   name: yolo11n
 
   model_path: data/models/yolo11n.onnx
@@ -34,10 +28,7 @@ detector:
 
   num_threads: 0           # 0 = onnxruntime default
 
-
-
 tracker:
-
   max_age: 6              # frames without a match before a track is lost; ~2x detect_every_n_frames (higher only breeds ghost boxes coasting on prediction)
 
   min_hits: 2             # matches before a track is drawn; 1 admits detector junk (67 ids, 37 spurious), 3 only adds latency
@@ -50,8 +41,6 @@ tracker:
 
                             # so raising that cadence needs this raised too (roughly 0.7 x the gap in frames).
 
-
-
   high_conf: 0.5           # detections >= this go to the first association pass
 
   low_conf: 0.1            # detections in [low_conf, high_conf) go to the second (ByteTrack) pass
@@ -62,10 +51,7 @@ tracker:
 
   max_exemplars: 16      # per-track appearance buffer; crops are not stored, so this is all a lost track can hand to memory
 
-
-
 memory:
-
   db_path: data/memory.db
 
   index_path: data/memory.faiss
@@ -74,36 +60,22 @@ memory:
 
   reid_threshold: 0.80        # cosine, tune after Phase 7
 
-
-
 reid:
-
   verifier: cosine        # cosine | logistic
-
-  min_pair_gap: 2         # min observations apart for a positive pair, so pairs are not near-duplicate frames
-
-  test_fraction: 0.3      # held-out fraction, split BY TRACK not by pair
-
+  min_pair_gap: 2         # observations apart, so a positive pair is not two near-identical frames
+  max_pairs_per_track: 200 # cap per track, or one long-lived object dominates the positive class
+  test_fraction: 0.3      # held out BY TRACK - a track must never contribute to both sides
   seed: 0
 
-
-
 search:
-
   default_k: 5
 
-
-
 video:
-
   min_crop_px: 8             # boxes smaller than this carry no usable appearance signal
 
   detect_every_n_frames: 3   # tracker fills the gaps; 5 confirms tracks too slowly (min_hits*N frames)
 
-
-
 anomaly:
-
   method: knn
 
   k: 5
@@ -113,6 +85,5 @@ anomaly:
   n_estimators: 100   # isoforest
 
   nu: 0.1             # ocsvm: max fraction of normals outside boundary
-
   seed: 0
 
