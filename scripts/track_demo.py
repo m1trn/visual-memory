@@ -19,8 +19,10 @@ import cv2
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from vision_memory.config import load_detector_config, load_tracker_config, load_video_config  # noqa: E402
+from vision_memory.config import (load_detector_config, load_encoder_config,  # noqa: E402
+                                  load_tracker_config, load_video_config)
 from vision_memory.detector import YoloOnnxDetector  # noqa: E402
+from vision_memory.encoder import Encoder  # noqa: E402
 from vision_memory.tracker import ByteTracker  # noqa: E402
 
 _DEFAULT_VIDEO = Path("data/samples/vtest.avi")
@@ -46,6 +48,7 @@ def main() -> None:
 
     detector = YoloOnnxDetector(load_detector_config())
     tracker_cfg = load_tracker_config()
+    encoder = Encoder(load_encoder_config()) if load_video_config().embed_for_association else None
     tracker = ByteTracker(tracker_cfg)
     video_cfg = load_video_config()
 
@@ -64,6 +67,7 @@ def main() -> None:
     writer = cv2.VideoWriter(str(part_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
 
     det_times: list[float] = []
+    emb_times: list[float] = []
     trk_times: list[float] = []
     confirmed: dict[int, str] = {}
     stale_skipped = 0
@@ -84,8 +88,25 @@ def main() -> None:
             detections = detector.detect(frame)
             det_times.append(time.perf_counter() - t0)
 
+        # Appearance is what separates two overlapping people; without it the
+        # tracker arbitrates a crossing on box position alone and can hand one
+        # person's id to the other.
+        embeddings = None
+        if detections and encoder is not None:
+            crops, idx = [], []
+            for j, det in enumerate(detections):
+                crop = det.crop(frame, video_cfg.crop_upper_fraction)
+                if crop.size and min(crop.shape[:2]) >= video_cfg.min_crop_px:
+                    idx.append(j)
+                    crops.append(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
+            if crops:
+                t0 = time.perf_counter()
+                vectors = encoder.encode_batch(crops)
+                emb_times.append(time.perf_counter() - t0)
+                embeddings = {j: v for j, v in zip(idx, vectors)}
+
         t0 = time.perf_counter()
-        active = tracker.update(detections)
+        active = tracker.update(detections, embeddings)
         trk_times.append(time.perf_counter() - t0)
         lost_count += len(tracker.pop_lost())
         if detections is not None:
@@ -116,6 +137,8 @@ def main() -> None:
     print(f"{args.video.name}: {frame_idx} frames in {wall:.1f}s ({frame_idx / wall:.1f} fps)")
     if det_times:
         print(f"  detector: {statistics.median(det_times) * 1000:.1f} ms/frame (median, {len(det_times)} runs)")
+    if emb_times:
+        print(f"  appearance: {statistics.median(emb_times) * 1000:.0f} ms/frame (median, {len(emb_times)} runs)")
     if trk_times:
         print(f"  tracker:  {statistics.median(trk_times) * 1000:.1f} ms/frame (median, {len(trk_times)} runs)")
     by_label = Counter(confirmed.values())

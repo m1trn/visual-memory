@@ -416,6 +416,17 @@ class ByteTracker:
             # when both sides actually carry an embedding.
             if self.cfg.appearance_veto > 0.0 and has_cos[r, c] and cos[r, c] < self.cfg.appearance_veto:
                 continue
+            # When two people overlap, their boxes are nearly interchangeable and
+            # the assignment can hand one person's id to the other. Geometry
+            # cannot arbitrate that, but appearance can: if a rival track fits
+            # this detection clearly better than the track about to claim it,
+            # nobody takes it and both coast until the crossing resolves.
+            if self.cfg.claim_margin > 0.0 and has_cos[r, c]:
+                rivals = cos[:, c].copy()
+                rivals[r] = -np.inf
+                rivals[~has_cos[:, c]] = -np.inf
+                if rivals.size and float(rivals.max()) - cos[r, c] > self.cfg.claim_margin:
+                    continue
             matches[track_idx[r]] = det_idx[c]
             matched_t.add(r)
             matched_d.add(c)

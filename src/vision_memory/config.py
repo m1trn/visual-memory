@@ -42,6 +42,7 @@ class TrackerConfig:
     low_conf: float
     veto_views: int
     appearance_veto: float
+    claim_margin: float
     appearance_weight: float
     embed_every_n: int
     max_exemplars: int
@@ -71,6 +72,7 @@ class VideoConfig:
     detect_every_n_frames: int
     min_crop_px: int
     crop_upper_fraction: float
+    embed_for_association: bool
 
 
 @dataclass(frozen=True)

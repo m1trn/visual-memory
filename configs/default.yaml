@@ -54,11 +54,18 @@ tracker:
 
   veto_views: 3           # how many recent observations a track offers the veto; a running mean
                           # resembles none of the views it averages, so raw observations compare better
+  claim_margin: 0.0       # refuse a match when a rival track's appearance fits the detection this much
+                          # better. Measured too blunt: at 0.10 it cuts id theft 20 -> 6 but costs 8 extra
+                          # identities and 2% coverage, so it is off. Appearance in the cost does the same
+                          # job more cheaply.
   appearance_veto: 0.4    # reject a match whose appearance is implausible for the same object.
                           # ONLY ACTIVE when the caller passes embeddings into update(); track_demo and
                           # reid_demo do not, so it is inert there. At 0.5 it costs identities (18 -> 20)
                           # by rejecting correct matches whose embedding is briefly unstable.
-  appearance_weight: 0.0  # lambda in cost = (1-lambda)*(1-IoU) + lambda*(1-cosine); 0 = motion only
+  appearance_weight: 0.5  # share of the association cost taken from appearance rather than geometry.
+                          # Two overlapping people have near-identical geometry, so this is what stops
+                          # one of them claiming the other's id: measured id theft 20 -> 14 with identity
+                          # count, coverage and track lifetime all unchanged. Needs embeddings at update().  # lambda in cost = (1-lambda)*(1-IoU) + lambda*(1-cosine); 0 = motion only
 
   embed_every_n: 2       # schedule for due_for_embedding(); callers passing embeddings into update() rate-limit themselves. 0 disables
 
@@ -90,6 +97,9 @@ search:
   default_k: 5
 
 video:
+  embed_for_association: true # compute appearance during tracking, not just for memory. Without it the
+                              # tracker is blind: every appearance rule below is inert and two overlapping
+                              # people are told apart by box position alone. Costs roughly 90 ms per crop.
   crop_upper_fraction: 0.6   # embed only the top of a box. Head and torso identify a person and are the
                              # last thing an occluder hides. Honest caveat: audited, this buys nothing in
                              # discriminability over a 3 s gap (AUROC 0.902 vs 0.901 full-body) - it mainly
