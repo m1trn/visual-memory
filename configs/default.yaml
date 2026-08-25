@@ -35,6 +35,8 @@ tracker:
 
   iou_threshold: 0.3      # IoU at or above this accepts a match outright; below it the centre gate decides
 
+  contested_iou: 0.5      # a detection this deep inside two tracks at once is not safely attributable;
+                          # withhold it and let both coast rather than guess and swap their ids
   max_centre_distance: 1.5  # fallback gate in box widths, for the ~6% of true matches that fall under iou_threshold.
 
                             # Tuned at detect_every_n_frames: 3 - motion per interval scales with the frame skip,

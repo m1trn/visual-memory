@@ -17,6 +17,7 @@ def _cfg(**overrides) -> TrackerConfig:
         iou_threshold=0.3,
         high_conf=0.5,
         low_conf=0.1,
+        contested_iou=0.5,
         max_centre_distance=2.0,
         appearance_weight=0.0,
         embed_every_n=2,
@@ -220,3 +221,18 @@ def test_centre_distance_is_scale_free() -> None:
     assert centre_distance_matrix(small, small_moved)[0, 0] == pytest.approx(
         centre_distance_matrix(big, big_moved)[0, 0]
     )
+
+
+def test_a_detection_covering_two_tracks_is_withheld_rather_than_guessed() -> None:
+    """A box deep inside two tracks is a coin flip, and losing it swaps two ids."""
+    tracker = ByteTracker(_cfg(min_hits=1))
+    tracker.update([_det(0.0, 0.0), _det(60.0, 0.0)])
+    before = {t.id: t.box.copy() for t in tracker.update([_det(2.0, 0.0), _det(62.0, 0.0)])}
+    assert set(before) == {1, 2}
+
+    # One detection now sits squarely on top of both tracks at once.
+    tracker.update([_det(1.0, 0.0)])
+    tracker._tracks[0]._kf.x[:2] = tracker._tracks[1]._kf.x[:2]  # force full overlap
+    kept = tracker.update([_det(1.0, 0.0)])
+    # Neither track may claim it: both coast, and no id changes hands.
+    assert all(t.time_since_update > 0 for t in kept if t.id in (1, 2))
