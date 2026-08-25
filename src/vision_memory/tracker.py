@@ -100,6 +100,7 @@ def iou_matrix(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return np.divide(inter, union, out=np.zeros_like(inter), where=union > 0)
 
 
+_IMPOSSIBLE = 1e6  # cost of a pairing the gate will reject anyway
 _TIE_BREAK = 1e-3  # weight of the centre term relative to IoU in the cost
 
 
@@ -366,12 +367,22 @@ class ByteTracker:
         cos = _cosine_matrix(track_embs, det_embs)
         has_cos = ~np.isnan(cos)
 
+        # An object does not change class. Without this the low-confidence pass
+        # feeds a person track the detector's junk (dog, skis, bird all appear
+        # on this footage), which both steals the match and silently relabels
+        # the track.
+        same_class = np.array(
+            [[self._tracks[i].class_id == detections[j].class_id for j in det_idx] for i in track_idx],
+            dtype=bool,
+        ) if track_idx and det_idx else np.zeros((len(track_idx), len(det_idx)), dtype=bool)
+
         lam = self.cfg.appearance_weight if use_appearance else 0.0
         if lam > 0.0:
             cost = np.where(has_cos, (1 - lam) * motion + lam * (1 - cos), motion)
         else:
             cost = motion
 
+        cost = np.where(same_class, cost, _IMPOSSIBLE)
         row, col = linear_sum_assignment(cost)
         matches: dict[int, int] = {}
         matched_t, matched_d = set(), set()
@@ -379,6 +390,8 @@ class ByteTracker:
             # Overlap accepts outright; otherwise centres must be close enough
             # relative to object size. `reach` is used rather than the raw config
             # value so the gate and the cost agree on what "close" means.
+            if not same_class[r, c]:
+                continue
             if iou[r, c] < self.cfg.iou_threshold and centre[r, c] > reach:
                 continue
             # Geometry alone cannot tell two people apart while they cross, but
