@@ -40,6 +40,8 @@ class TrackerConfig:
     max_centre_distance: float
     high_conf: float
     low_conf: float
+    veto_views: int
+    appearance_veto: float
     appearance_weight: float
     embed_every_n: int
     max_exemplars: int
@@ -67,6 +69,7 @@ class ReidConfig:
 class VideoConfig:
     detect_every_n_frames: int
     min_crop_px: int
+    crop_upper_fraction: float
 
 
 @dataclass(frozen=True)

@@ -123,7 +123,7 @@ def main() -> None:
                 break
             detections = detector.detect(frame) if frame_idx % video_cfg.detect_every_n_frames == 0 else None
             active = tracker.update(detections)
-            crops = [(t, crop_rgb(frame, t.box, video_cfg.min_crop_px)) for t in tracker.due_for_embedding()]
+            crops = [(t, crop_rgb(frame, t.box, video_cfg.min_crop_px, video_cfg.crop_upper_fraction)) for t in tracker.due_for_embedding()]
             usable = [(t, c) for t, c in crops if c is not None]
             if usable:
                 for (track, _), vec in zip(usable, encoder.encode_batch([c for _, c in usable])):

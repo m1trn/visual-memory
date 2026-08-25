@@ -36,10 +36,12 @@ _DEFAULT_URL = "https://raw.githubusercontent.com/opencv/opencv/4.x/samples/data
 _DEFAULT_CACHE = Path("data/reid_pairs.pkl")
 
 
-def crop_rgb(frame: np.ndarray, box: np.ndarray, min_px: int) -> np.ndarray | None:
+def crop_rgb(frame: np.ndarray, box: np.ndarray, min_px: int, upper: float = 1.0) -> np.ndarray | None:
     """Clamp an xyxy box to the frame and return the RGB crop, or None if too small."""
     h, w = frame.shape[:2]
-    x1, y1, x2, y2 = (int(round(v)) for v in box)
+    x1, y1, x2, y2 = (float(v) for v in box)
+    y2 = y1 + (y2 - y1) * upper
+    x1, y1, x2, y2 = (int(round(v)) for v in (x1, y1, x2, y2))
     x1, y1 = max(x1, 0), max(y1, 0)
     x2, y2 = min(x2, w), min(y2, h)
     if x2 - x1 < min_px or y2 - y1 < min_px:
@@ -73,7 +75,7 @@ def collect_track_embeddings(
         tracker.update(detections)
         # due_for_embedding() only returns tracks corrected by a real measurement
         # this frame, so their boxes crop cleanly out of the frame just processed.
-        crops = ((t, crop_rgb(frame, t.box, video_cfg.min_crop_px)) for t in tracker.due_for_embedding())
+        crops = ((t, crop_rgb(frame, t.box, video_cfg.min_crop_px, video_cfg.crop_upper_fraction)) for t in tracker.due_for_embedding())
         usable = [(t, c) for t, c in crops if c is not None]
         if usable:
             vecs = encoder.encode_batch([c for _, c in usable])

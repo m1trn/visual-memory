@@ -19,6 +19,8 @@ def _cfg(**overrides) -> TrackerConfig:
         low_conf=0.1,
         contested_iou=0.5,
         max_centre_distance=2.0,
+        veto_views=3,
+        appearance_veto=0.0,
         appearance_weight=0.0,
         embed_every_n=2,
         max_exemplars=16,
