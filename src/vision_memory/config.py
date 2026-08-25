@@ -61,6 +61,7 @@ class ReidConfig:
     min_pair_gap: int
     max_pairs_per_track: int
     observation_quantile: float
+    max_false_merge_rate: float
     test_fraction: float
     seed: int
 

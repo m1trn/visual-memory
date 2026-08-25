@@ -63,7 +63,8 @@ def _fit_verifier(pairs_path: Path) -> tuple[Verifier, float]:
     # The verifier's own boundary is fitted to pair scores; the binding decision
     # compares an aggregate, so it needs a boundary fitted to that instead.
     threshold, n_pos, n_neg = calibrate_identity_threshold(
-        observations, seen_on, cfg.observation_quantile, load_memory_config().exemplars_per_identity
+        observations, seen_on, cfg.observation_quantile,
+        load_memory_config().exemplars_per_identity, cfg.max_false_merge_rate,
     )
     print(f"calibrated on {n_pos} same-object and {n_neg} provably-different track/identity examples")
     return verifier, threshold

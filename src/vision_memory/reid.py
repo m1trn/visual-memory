@@ -161,6 +161,7 @@ def calibrate_identity_threshold(
     frames: Mapping[int, Sequence[int]],
     quantile: float,
     exemplars_per_identity: int,
+    max_false_merge_rate: float = 0.0,
 ) -> tuple[float, int, int]:
     """Learn the accept/reject boundary on track-versus-identity scores.
 
@@ -173,6 +174,15 @@ def calibrate_identity_threshold(
     against an identity built from its own earlier ones is a positive. A track
     against the identity of a track that was on screen at the same time is a
     negative, and provably so — one detection cannot be two tracks in one frame.
+
+    With ``max_false_merge_rate`` the boundary is the lowest one holding false
+    merges at or under that rate, rather than Youden's J. The two errors are not
+    equally bad here: failing to recognize a returning object costs one spare
+    identity that a later sighting can still repair, while binding two people
+    into one record corrupts it permanently and shows a viewer the wrong name.
+    On this footage the distributions overlap so heavily — same object 0.657
+    median against 0.653 at the 95th percentile of provably-different pairs —
+    that Youden lands on a boundary with a 21% false-merge rate.
 
     Returns ``(threshold, n_positive, n_negative)``.
     """
@@ -203,6 +213,12 @@ def calibrate_identity_threshold(
 
     scores = np.array(pos + neg, dtype=np.float32)
     labels = np.array([1] * len(pos) + [0] * len(neg), dtype=np.int64)
+    if max_false_merge_rate > 0.0:
+        negatives = np.sort(np.array(neg, dtype=np.float32))
+        allowed = int(np.floor(max_false_merge_rate * len(negatives)))
+        # Sit just above the highest different-object score we are willing to admit.
+        cut = negatives[len(negatives) - allowed - 1] if allowed < len(negatives) else negatives[0]
+        return float(np.nextafter(cut, np.inf)), len(pos), len(neg)
     return _youden_threshold(scores, labels), len(pos), len(neg)
 
 class Verifier(Protocol):

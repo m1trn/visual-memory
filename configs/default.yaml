@@ -29,7 +29,12 @@ detector:
   num_threads: 0           # 0 = onnxruntime default
 
 tracker:
-  max_age: 6              # frames without a match before a track is lost; ~2x detect_every_n_frames (higher only breeds ghost boxes coasting on prediction)
+  max_age: 12             # frames without a match before a track is lost. A person walking behind
+                          # something is invisible to the detector for ~12 frames; at 6 the track
+                          # expired first and came back as a new id. Raising it doubles median track
+                          # life (5.7s -> 11.1s) and cuts identities 25 -> 20 with coverage unchanged.
+                          # Only safe because stale tracks are no longer drawn and the appearance veto
+                          # now blocks the bad re-associations a long memory would otherwise allow.
 
   min_hits: 2             # matches before a track is drawn; 1 admits detector junk (67 ids, 37 spurious), 3 only adds latency
 
@@ -71,6 +76,9 @@ reid:
   verifier: cosine        # cosine | logistic
   min_pair_gap: 2         # observations apart, so a positive pair is not two near-identical frames
   max_pairs_per_track: 200 # cap per track, or one long-lived object dominates the positive class
+  max_false_merge_rate: 0.02 # share of provably-different pairs the binding boundary may accept.
+                            # Showing a viewer the wrong name is worse than failing to recognize
+                            # someone, so the boundary is set by this rather than by balanced error.
   observation_quantile: 0.5  # fraction of a track that must agree with a stored identity. 0.75 binds
                             # 3 more of 28 tracks but nearly doubles false merges (66 vs 39 of 352),
                             # and a false merge is unrecoverable while a miss just costs an identity
