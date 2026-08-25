@@ -78,7 +78,7 @@ class ReIdentifier:
     ) -> Resolution:
         """Bind these observations into the best matching identity, or create one."""
         obs = _stack_unit(embeddings, self.memory.dim)
-        best_id, best_score = self._best_candidate(label, obs)
+        best_id, best_score = self._best_candidate(label, obs, first_seen, last_seen)
 
         if best_id is not None and best_score >= self.threshold:
             identity_id = self.memory.remember(
@@ -89,11 +89,25 @@ class ReIdentifier:
         identity_id = self.memory.remember(label, obs, first_seen, last_seen, appearances)
         return Resolution(identity_id=identity_id, score=best_score, is_new=True)
 
-    def _best_candidate(self, label: str, obs: np.ndarray) -> tuple[int | None, float]:
-        """Highest-scoring same-label identity, or ``(None, -inf)`` if there is none."""
+    def _best_candidate(self, label: str, obs: np.ndarray, first_seen: float, last_seen: float) -> tuple[int | None, float]:
+        """Highest-scoring same-label identity, or ``(None, -inf)`` if there is none.
+
+        An identity whose lifetime overlaps this track's is skipped outright. One
+        object cannot be in two places at once, so if both were on screen at the
+        same moment they are provably different things, whatever their embeddings
+        say. This is a hard fact rather than a threshold, and it is exactly the
+        error that shows a viewer one person wearing another person's number:
+        audited on this footage, *both* of the demo's re-identifications were
+        between tracks that had been simultaneously alive.
+        """
         best_id: int | None = None
         best_score = float("-inf")
         for identity_id in self._shortlist(label, obs):
+            identity = self.memory.get(identity_id)
+            # Strict: a track ending exactly as another begins is sequential,
+            # not simultaneous, and is a perfectly good re-identification.
+            if identity is not None and identity.first_seen < last_seen and first_seen < identity.last_seen:
+                continue
             exemplars = self.memory.exemplar_vectors(identity_id)
             if len(exemplars) == 0:
                 continue

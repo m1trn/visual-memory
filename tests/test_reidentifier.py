@@ -167,3 +167,19 @@ def test_rejects_empty_observations(tmp_path) -> None:
     with VisualMemory(cfg(tmp_path), DIM) as mem:
         with pytest.raises(ValueError):
             ReIdentifier(mem, FakeVerifier()).resolve("person", [], 0.0, 1.0, 0)
+
+
+def test_an_identity_alive_at_the_same_time_is_never_bound(tmp_path) -> None:
+    """Two things on screen together are provably not the same thing."""
+    e = np.eye(DIM, dtype=np.float32)
+    obs = cluster(e[3], 4, seed=11)
+    with VisualMemory(cfg(tmp_path), DIM) as mem:
+        rid = ReIdentifier(mem, FakeVerifier(0.0))  # accepts anything on appearance alone
+        first = rid.resolve("bag", obs, 0.0, 10.0, 4)
+        # Identical embeddings, but this track overlaps the stored one in time.
+        overlapping = rid.resolve("bag", obs, 5.0, 15.0, 4)
+        assert overlapping.is_new
+        assert overlapping.identity_id != first.identity_id
+        # The same appearance after the first has finished does bind.
+        later = rid.resolve("bag", obs, 20.0, 25.0, 4)
+        assert not later.is_new
