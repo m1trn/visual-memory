@@ -169,7 +169,10 @@ def test_appearance_weight_breaks_iou_tie_with_embedding() -> None:
 
     # Now both tracks sit far from any new detection (IoU 0 to everything),
     # so only appearance can disambiguate which detection belongs to which id.
-    tracker.cfg = dataclasses.replace(tracker.cfg, iou_threshold=0.0)
+    # Reach far enough that the centre gate admits both candidates, leaving
+    # appearance as the only thing that can tell them apart. (iou_threshold=0
+    # would instead disable the gate entirely and accept any pairing.)
+    tracker.cfg = dataclasses.replace(tracker.cfg, max_centre_distance=200.0)
     det_for_a = Detection(box=(1000.0, 1000.0, 1020.0, 1020.0), score=0.9, class_id=0, label="obj")
     det_for_b = Detection(box=(2000.0, 2000.0, 2020.0, 2020.0), score=0.9, class_id=0, label="obj")
     active = tracker.update([det_for_a, det_for_b], embeddings={0: emb_a, 1: emb_b})

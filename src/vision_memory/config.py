@@ -53,6 +53,14 @@ class MemoryConfig:
 
 
 @dataclass(frozen=True)
+class ReidConfig:
+    verifier: str
+    min_pair_gap: int
+    test_fraction: float
+    seed: int
+
+
+@dataclass(frozen=True)
 class VideoConfig:
     detect_every_n_frames: int
     min_crop_px: int
@@ -109,6 +117,11 @@ def load_tracker_config(path: Path = DEFAULT_CONFIG_PATH) -> TrackerConfig:
 def load_memory_config(path: Path = DEFAULT_CONFIG_PATH) -> MemoryConfig:
     """Load only the `memory` section as a typed dataclass."""
     return MemoryConfig(**load_raw(path)["memory"])
+
+
+def load_reid_config(path: Path = DEFAULT_CONFIG_PATH) -> ReidConfig:
+    """Load only the `reid` section as a typed dataclass."""
+    return ReidConfig(**load_raw(path)["reid"])
 
 
 def load_video_config(path: Path = DEFAULT_CONFIG_PATH) -> VideoConfig:

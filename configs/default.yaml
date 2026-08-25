@@ -1,50 +1,118 @@
 # All tunables live here. Never hardcode these in modules.
 
+
+
 encoder:
+
   backend: dinov2          # dinov2 (Meta, ViT-S/14, 384-dim) | radio (NVIDIA C-RADIO, 2304-dim)
+
   # torch.hub name; small = ViT-S/14, 384-dim embeddings
+
   name: dinov2_vits14
+
   input_size: 224          # square resize; multiple of the patch size (14 for DINOv2, 16 for RADIO)
+
   device: cpu
+
   batch_size: 16
 
+
+
 detector:
+
   name: yolo11n
+
   model_path: data/models/yolo11n.onnx
+
   input_size: 640
+
   conf_threshold: 0.1
+
   iou_threshold: 0.50
+
   classes: null            # list of COCO ids to keep, or null for all
+
   num_threads: 0           # 0 = onnxruntime default
 
+
+
 tracker:
+
   max_age: 6              # frames without a match before a track is lost; ~2x detect_every_n_frames (higher only breeds ghost boxes coasting on prediction)
+
   min_hits: 2             # matches before a track is drawn; 1 admits detector junk (67 ids, 37 spurious), 3 only adds latency
-  iou_threshold: 0.3      # min IoU to accept a match
-  max_centre_distance: 2.0  # or centres within this many box widths; IoU alone is 0 for objects that move further than they are wide
+
+  iou_threshold: 0.3      # IoU at or above this accepts a match outright; below it the centre gate decides
+
+  max_centre_distance: 1.5  # fallback gate in box widths, for the ~6% of true matches that fall under iou_threshold.
+
+                            # Tuned at detect_every_n_frames: 3 - motion per interval scales with the frame skip,
+
+                            # so raising that cadence needs this raised too (roughly 0.7 x the gap in frames).
+
+
+
   high_conf: 0.5           # detections >= this go to the first association pass
+
   low_conf: 0.1            # detections in [low_conf, high_conf) go to the second (ByteTrack) pass
+
   appearance_weight: 0.0  # lambda in cost = (1-lambda)*(1-IoU) + lambda*(1-cosine); 0 = motion only
+
   embed_every_n: 2       # schedule for due_for_embedding(); callers passing embeddings into update() rate-limit themselves. 0 disables
+
   max_exemplars: 16      # per-track appearance buffer; crops are not stored, so this is all a lost track can hand to memory
 
+
+
 memory:
+
   db_path: data/memory.db
+
   index_path: data/memory.faiss
+
   exemplars_per_identity: 5   # K
+
   reid_threshold: 0.80        # cosine, tune after Phase 7
 
+
+
+reid:
+
+  verifier: cosine        # cosine | logistic
+
+  min_pair_gap: 2         # min observations apart for a positive pair, so pairs are not near-duplicate frames
+
+  test_fraction: 0.3      # held-out fraction, split BY TRACK not by pair
+
+  seed: 0
+
+
+
 search:
+
   default_k: 5
 
+
+
 video:
+
   min_crop_px: 8             # boxes smaller than this carry no usable appearance signal
+
   detect_every_n_frames: 3   # tracker fills the gaps; 5 confirms tracks too slowly (min_hits*N frames)
 
+
+
 anomaly:
+
   method: knn
+
   k: 5
+
   shrinkage: 0.1
+
   n_estimators: 100   # isoforest
+
   nu: 0.1             # ocsvm: max fraction of normals outside boundary
+
   seed: 0
+

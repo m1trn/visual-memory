@@ -44,7 +44,8 @@ def main() -> None:
         urllib.request.urlretrieve(_DEFAULT_URL, args.video)
 
     detector = YoloOnnxDetector(load_detector_config())
-    tracker = ByteTracker(load_tracker_config())
+    tracker_cfg = load_tracker_config()
+    tracker = ByteTracker(tracker_cfg)
     video_cfg = load_video_config()
 
     cap = cv2.VideoCapture(str(args.video))
@@ -61,6 +62,8 @@ def main() -> None:
     trk_times: list[float] = []
     confirmed: dict[int, str] = {}
     stale_skipped = 0
+    assigned = 0
+    high_conf_dets = 0
     lost_count = 0
     frame_idx = 0
     t_start = time.perf_counter()
@@ -80,6 +83,10 @@ def main() -> None:
         active = tracker.update(detections)
         trk_times.append(time.perf_counter() - t0)
         lost_count += len(tracker.pop_lost())
+        if detections is not None:
+            high_conf_dets += sum(1 for d in detections if d.score >= tracker_cfg.high_conf)
+            assigned += sum(1 for t in active
+                            if t.time_since_update == 0 and t.score >= tracker_cfg.high_conf)
 
         for trk in active:
             # A track that has missed a whole detector cycle is coasting on
@@ -109,6 +116,11 @@ def main() -> None:
     print(f"  confirmed identities: {len(confirmed)} " +
           "(" + ", ".join(f"{n} {lbl}" for lbl, n in by_label.most_common()) + ")")
     print(f"  stale boxes not drawn: {stale_skipped}")
+    # Identity count alone rewards a tracker that merges everything, so it is
+    # only meaningful next to how much of the footage stayed covered.
+    print(f"  detections assigned: {assigned}/{high_conf_dets} "
+          f"({assigned / max(high_conf_dets, 1):.1%} coverage)")
+    print(f"  tracks spawned: {tracker._next_id - 1}")
     print(f"  lost tracks: {lost_count}")
     print(f"annotated -> {out_path}")
 
