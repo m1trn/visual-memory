@@ -183,3 +183,27 @@ def test_an_identity_alive_at_the_same_time_is_never_bound(tmp_path) -> None:
         # The same appearance after the first has finished does bind.
         later = rid.resolve("bag", obs, 20.0, 25.0, 4)
         assert not later.is_new
+
+
+def test_continuity_lets_a_weak_appearance_match_bind(tmp_path) -> None:
+    """Reappearing where you vanished, moments later, is evidence in its own right."""
+    e = np.eye(DIM, dtype=np.float32)
+    stored = [e[4].copy() for _ in range(4)]
+    # Same object, seen differently enough that appearance alone will not do it.
+    returning = np.sqrt(0.80) * e[4] + np.sqrt(0.20) * e[5]
+    returning = [(returning / np.linalg.norm(returning)).astype(np.float32) for _ in range(4)]
+    box = np.array([100.0, 100.0, 140.0, 200.0])
+    strict = 0.95  # above the ~0.894 these two score against each other
+
+    with VisualMemory(cfg(tmp_path), DIM) as mem:
+        rid = ReIdentifier(mem, FakeVerifier(strict))
+        first = rid.resolve("bag", stored, 0.0, 5.0, 4, box=box)
+        near = rid.resolve("bag", returning, 6.0, 7.0, 4, box=box + 5.0)
+        assert near.identity_id == first.identity_id and not near.is_new
+
+    with VisualMemory(cfg(tmp_path / "far"), DIM) as mem:
+        rid = ReIdentifier(mem, FakeVerifier(strict))
+        rid.resolve("bag", stored, 0.0, 5.0, 4, box=box)
+        # Same appearance evidence, but far away and long after: nothing to lend.
+        far = rid.resolve("bag", returning, 400.0, 401.0, 4, box=box + 900.0)
+        assert far.is_new

@@ -129,12 +129,21 @@ def main() -> None:
             if not ok:
                 break
             detections = detector.detect(frame) if frame_idx % video_cfg.detect_every_n_frames == 0 else None
-            active = tracker.update(detections)
-            crops = [(t, crop_rgb(frame, t.box, video_cfg.min_crop_px, video_cfg.crop_upper_fraction)) for t in tracker.due_for_embedding()]
-            usable = [(t, c) for t, c in crops if c is not None]
-            if usable:
-                for (track, _), vec in zip(usable, encoder.encode_batch([c for _, c in usable])):
-                    tracker.add_embedding(track, vec)
+            # Embed the detections BEFORE association, so appearance can help
+            # decide who is who rather than only being recorded afterwards.
+            # Without this the tracker arbitrates a crossing on box position
+            # alone, which is how one person ends up with another's id.
+            embeddings = None
+            if detections:
+                crops, idx = [], []
+                for j, det in enumerate(detections):
+                    crop = crop_rgb(frame, det.box, video_cfg.min_crop_px, video_cfg.crop_upper_fraction)
+                    if crop is not None:
+                        idx.append(j)
+                        crops.append(crop)
+                if crops:
+                    embeddings = dict(zip(idx, encoder.encode_batch(crops)))
+            active = tracker.update(detections, embeddings)
             first_frame.update({t.id: frame_idx for t in active if t.id not in first_frame})
 
             # Identify a track as soon as it has enough appearance evidence,
@@ -147,10 +156,17 @@ def main() -> None:
                     continue
                 res = reid.resolve(track.label, track.exemplars,
                                    first_frame.get(track.id, frame_idx) / fps,
-                                   frame_idx / fps, track.hits)
+                                   frame_idx / fps, track.hits, box=track.box)
                 bound[track.id] = res
                 created += res.is_new
                 rebound += not res.is_new
+
+            # Keep every identified object's whereabouts current, so a track that
+            # dies here can lend its continuity to one appearing here next.
+            for track in active:
+                res = bound.get(track.id)
+                if res is not None and track.time_since_update == 0:
+                    reid.note_seen(res.identity_id, frame_idx / fps, track.box)
 
             # A track coasting on prediction alone gets no box drawn.
             _draw(frame, [(t.id, t.box.copy(), t.label) for t in active if t.time_since_update <= fresh], bound)

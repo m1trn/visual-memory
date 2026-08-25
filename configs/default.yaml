@@ -87,6 +87,11 @@ reid:
   max_false_merge_rate: 0.02 # share of provably-different pairs the binding boundary may accept.
                             # Showing a viewer the wrong name is worse than failing to recognize
                             # someone, so the boundary is set by this rather than by balanced error.
+  continuity_bonus: 0.15  # how much the appearance bar may be lowered for an object that reappears where
+                          # another vanished moments ago. Appearance across a gap is weak; continuity in
+                          # space and time is strong, and is the evidence the tracker uses and re-id lacked.
+  spatial_scale: 2.0      # box widths over which that continuity evidence decays
+  temporal_scale: 2.0     # seconds over which it decays
   observation_quantile: 0.5  # fraction of a track that must agree with a stored identity. 0.75 binds
                             # 3 more of 28 tracks but nearly doubles false merges (66 vs 39 of 352),
                             # and a false merge is unrecoverable while a miss just costs an identity
