@@ -101,6 +101,19 @@ reid:
 search:
   default_k: 5
 
+appearance:
+  colour_weight: 0.4      # share of the descriptor taken from clothing colour rather than learned
+                          # features. On 30 px pedestrian crops two strangers in dark coats look alike
+                          # to the encoder; colour separates them. Measured across a 3 s gap: learned
+                          # features alone AUROC 0.912 / 62.1% recall at 5% false accepts, fused 0.930
+                          # / 68.8%. 0 disables and falls back to the learned features alone.
+  colour_bands: 2         # horizontal bands the colour histogram is split into. One band cannot tell
+                          # "dark jacket, blue jeans" from "dark jacket, dark trousers"; two can.
+  deep_upper_fraction: 0.6 # the learned half sees only the top of the box, where identity lives; the
+                          # colour half sees all of it, since trousers are useless for shape and
+                          # informative for colour.
+  min_crop_px: 8          # boxes smaller than this carry no usable appearance signal
+
 video:
   embed_for_association: true # compute appearance during tracking, not just for memory. Without it the
                               # tracker is blind: every appearance rule below is inert and two overlapping

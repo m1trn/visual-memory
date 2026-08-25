@@ -22,10 +22,12 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from vision_memory.config import (  # noqa: E402
+    load_appearance_config,
     load_detector_config, load_encoder_config, load_memory_config,
     load_reid_config, load_tracker_config, load_video_config,
 )
 from vision_memory.detector import YoloOnnxDetector  # noqa: E402
+from vision_memory.appearance import AppearanceDescriber  # noqa: E402
 from vision_memory.encoder import Encoder  # noqa: E402
 from vision_memory.metrics import auroc  # noqa: E402
 from vision_memory.reid import balance, build_verifier, mine_pairs, split_by_group  # noqa: E402
@@ -34,19 +36,6 @@ from vision_memory.tracker import ByteTracker  # noqa: E402
 _DEFAULT_VIDEO = Path("data/samples/vtest.avi")
 _DEFAULT_URL = "https://raw.githubusercontent.com/opencv/opencv/4.x/samples/data/vtest.avi"
 _DEFAULT_CACHE = Path("data/reid_pairs.pkl")
-
-
-def crop_rgb(frame: np.ndarray, box: np.ndarray, min_px: int, upper: float = 1.0) -> np.ndarray | None:
-    """Clamp an xyxy box to the frame and return the RGB crop, or None if too small."""
-    h, w = frame.shape[:2]
-    x1, y1, x2, y2 = (float(v) for v in box)
-    y2 = y1 + (y2 - y1) * upper
-    x1, y1, x2, y2 = (int(round(v)) for v in (x1, y1, x2, y2))
-    x1, y1 = max(x1, 0), max(y1, 0)
-    x2, y2 = min(x2, w), min(y2, h)
-    if x2 - x1 < min_px or y2 - y1 < min_px:
-        return None
-    return cv2.cvtColor(frame[y1:y2, x1:x2], cv2.COLOR_BGR2RGB)
 
 
 def collect_track_embeddings(
@@ -60,7 +49,7 @@ def collect_track_embeddings(
     """
     video_cfg = load_video_config()
     detector = YoloOnnxDetector(load_detector_config())
-    encoder = Encoder(load_encoder_config())
+    describer = AppearanceDescriber(Encoder(load_encoder_config()), load_appearance_config())
     tracker = ByteTracker(load_tracker_config())
 
     observations: dict[int, list[np.ndarray]] = {}
@@ -72,16 +61,15 @@ def collect_track_embeddings(
         if not ok:
             break
         detections = detector.detect(frame) if frame_idx % video_cfg.detect_every_n_frames == 0 else None
-        tracker.update(detections)
-        # due_for_embedding() only returns tracks corrected by a real measurement
-        # this frame, so their boxes crop cleanly out of the frame just processed.
-        crops = ((t, crop_rgb(frame, t.box, video_cfg.min_crop_px, video_cfg.crop_upper_fraction)) for t in tracker.due_for_embedding())
-        usable = [(t, c) for t, c in crops if c is not None]
-        if usable:
-            vecs = encoder.encode_batch([c for _, c in usable])
-            for (track, _), vec in zip(usable, vecs):
-                tracker.add_embedding(track, vec)
-                observations.setdefault(track.id, []).append(np.asarray(vec, dtype=np.float32))
+        # Describe before associating, and with the same descriptor the rest of
+        # the system uses, so what is measured here is what actually ships.
+        described = describer.describe(frame, [d.box for d in detections]) if detections else None
+        active = tracker.update(detections, described)
+        # Record a vector against the track that ended up owning that detection.
+        for track in active:
+            if track.time_since_update == 0 and track.exemplars:
+                observations.setdefault(track.id, []).append(
+                    np.asarray(track.exemplars[-1], dtype=np.float32))
                 seen_on.setdefault(track.id, []).append(frame_idx)
         frame_idx += 1
     cap.release()

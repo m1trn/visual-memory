@@ -25,13 +25,14 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from reid_bench import _DEFAULT_CACHE, crop_rgb  # noqa: E402
+from reid_bench import _DEFAULT_CACHE  # noqa: E402
 from track_demo import _color  # noqa: E402
 from vision_memory.config import (  # noqa: E402
-    load_detector_config, load_encoder_config, load_memory_config, load_reid_config,
+    load_detector_config, load_encoder_config, load_appearance_config, load_memory_config, load_reid_config,
     load_tracker_config, load_video_config,
 )
 from vision_memory.detector import YoloOnnxDetector  # noqa: E402
+from vision_memory.appearance import AppearanceDescriber  # noqa: E402
 from vision_memory.encoder import Encoder  # noqa: E402
 from vision_memory.memory import VisualMemory  # noqa: E402
 from vision_memory.reid import (Verifier, balance, build_verifier,
@@ -106,6 +107,7 @@ def main() -> None:
     video_cfg, tracker_cfg = load_video_config(), load_tracker_config()
     mem_cfg = replace(load_memory_config(), db_path=str(args.db), index_path=str(args.index))
     detector, encoder = YoloOnnxDetector(load_detector_config()), Encoder(load_encoder_config())
+    describer = AppearanceDescriber(encoder, load_appearance_config())
     tracker = ByteTracker(tracker_cfg)
     verifier, threshold = _fit_verifier(_DEFAULT_CACHE)
     cap = cv2.VideoCapture(str(args.video))
@@ -122,7 +124,7 @@ def main() -> None:
     bound: dict[int, Resolution] = {}
     first_frame: dict[int, int] = {}
     lost_count = rebound = created = frame_idx = 0
-    with VisualMemory(mem_cfg, encoder.dim) as memory:
+    with VisualMemory(mem_cfg, describer.dim) as memory:
         reid = ReIdentifier(memory, verifier, threshold=threshold)
         while frame_idx < args.max_frames:
             ok, frame = cap.read()
@@ -133,16 +135,7 @@ def main() -> None:
             # decide who is who rather than only being recorded afterwards.
             # Without this the tracker arbitrates a crossing on box position
             # alone, which is how one person ends up with another's id.
-            embeddings = None
-            if detections:
-                crops, idx = [], []
-                for j, det in enumerate(detections):
-                    crop = crop_rgb(frame, det.box, video_cfg.min_crop_px, video_cfg.crop_upper_fraction)
-                    if crop is not None:
-                        idx.append(j)
-                        crops.append(crop)
-                if crops:
-                    embeddings = dict(zip(idx, encoder.encode_batch(crops)))
+            embeddings = describer.describe(frame, [d.box for d in detections]) if detections else None
             active = tracker.update(detections, embeddings)
             first_frame.update({t.id: frame_idx for t in active if t.id not in first_frame})
 

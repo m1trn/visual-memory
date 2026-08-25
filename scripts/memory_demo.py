@@ -26,6 +26,7 @@ from vision_memory.config import (  # noqa: E402
     load_tracker_config, load_video_config,
 )
 from vision_memory.detector import YoloOnnxDetector  # noqa: E402
+from vision_memory.appearance import AppearanceDescriber  # noqa: E402
 from vision_memory.encoder import Encoder  # noqa: E402
 from vision_memory.memory import VisualMemory  # noqa: E402
 from vision_memory.tracker import ByteTracker  # noqa: E402
@@ -39,19 +40,6 @@ def _exemplar_counts(db_path: str) -> dict[int, int]:
     with closing(sqlite3.connect(db_path)) as con:
         rows = con.execute("SELECT identity_id, COUNT(*) FROM exemplars GROUP BY identity_id").fetchall()
     return {int(i): int(n) for i, n in rows}
-
-
-def _crop_rgb(frame: np.ndarray, box: np.ndarray, min_px: int, upper: float = 1.0) -> np.ndarray | None:
-    """Clamp an xyxy box to the frame and return the RGB crop, or None if too small."""
-    h, w = frame.shape[:2]
-    x1, y1, x2, y2 = (float(v) for v in box)
-    y2 = y1 + (y2 - y1) * upper
-    x1, y1, x2, y2 = (int(round(v)) for v in (x1, y1, x2, y2))
-    x1, y1 = max(x1, 0), max(y1, 0)
-    x2, y2 = min(x2, w), min(y2, h)
-    if x2 - x1 < min_px or y2 - y1 < min_px:
-        return None
-    return cv2.cvtColor(frame[y1:y2, x1:x2], cv2.COLOR_BGR2RGB)
 
 
 def main() -> None:
@@ -75,7 +63,7 @@ def main() -> None:
     tracker_cfg = load_tracker_config()
 
     detector = YoloOnnxDetector(load_detector_config())
-    encoder = Encoder(load_encoder_config())
+    describer = AppearanceDescriber(Encoder(load_encoder_config()), load_appearance_config())
     tracker = ByteTracker(tracker_cfg)
 
     cap = cv2.VideoCapture(str(args.video))
@@ -89,7 +77,7 @@ def main() -> None:
     frame_idx = 0
     t_start = time.perf_counter()
 
-    with VisualMemory(mem_cfg, encoder.dim) as memory:
+    with VisualMemory(mem_cfg, describer.dim) as memory:
         identities_before = len(memory)
         while frame_idx < args.max_frames:
             ok, frame = cap.read()
@@ -103,14 +91,10 @@ def main() -> None:
                 # Embedding is the expensive stage, so it runs on a slower clock
                 # than detection: every Nth detector cycle, batched over the frame.
                 if tracker_cfg.embed_every_n and detect_cycle % tracker_cfg.embed_every_n == 0:
-                    idx_crops = [(i, _crop_rgb(frame, np.asarray(d.box), video_cfg.min_crop_px, video_cfg.crop_upper_fraction)) for i, d in enumerate(detections)]
-                    usable = [(i, c) for i, c in idx_crops if c is not None]
-                    if usable:
-                        t0 = time.perf_counter()
-                        vecs = encoder.encode_batch([c for _, c in usable])
-                        embed_time += time.perf_counter() - t0
-                        embed_calls += len(usable)
-                        embeddings = {i: vecs[j] for j, (i, _) in enumerate(usable)}
+                    t0 = time.perf_counter()
+                    embeddings = describer.describe(frame, [d.box for d in detections])
+                    embed_time += time.perf_counter() - t0
+                    embed_calls += len(embeddings)
                 detect_cycle += 1
 
             active = tracker.update(detections, embeddings or None)
@@ -143,7 +127,7 @@ def main() -> None:
 
     # Reopening from disk is the whole point of Phase 6: identities must survive
     # the process, not just live in RAM.
-    with VisualMemory(mem_cfg, encoder.dim) as memory:
+    with VisualMemory(mem_cfg, describer.dim) as memory:
         identities = memory.all_identities()
         print(f"reopened {mem_cfg.db_path} -> {len(memory)} identities")
         print(f"{'id':>4}  {'label':<12} {'appear':>6} {'seconds':>8} {'exemplars':>9}")

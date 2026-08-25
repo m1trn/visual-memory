@@ -71,6 +71,14 @@ class ReidConfig:
 
 
 @dataclass(frozen=True)
+class AppearanceConfig:
+    colour_weight: float
+    colour_bands: int
+    deep_upper_fraction: float
+    min_crop_px: int
+
+
+@dataclass(frozen=True)
 class VideoConfig:
     detect_every_n_frames: int
     min_crop_px: int
@@ -139,3 +147,8 @@ def load_reid_config(path: Path = DEFAULT_CONFIG_PATH) -> ReidConfig:
 def load_video_config(path: Path = DEFAULT_CONFIG_PATH) -> VideoConfig:
     """Load only the `video` section as a typed dataclass."""
     return VideoConfig(**load_raw(path)["video"])
+
+
+def load_appearance_config(path: Path = DEFAULT_CONFIG_PATH) -> AppearanceConfig:
+    """Load only the `appearance` section as a typed dataclass."""
+    return AppearanceConfig(**load_raw(path)["appearance"])
