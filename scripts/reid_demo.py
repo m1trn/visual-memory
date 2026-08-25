@@ -42,6 +42,7 @@ from vision_memory.tracker import ByteTracker  # noqa: E402
 _DEFAULT_VIDEO = Path("data/samples/vtest.avi")
 _DEFAULT_URL = "https://raw.githubusercontent.com/opencv/opencv/4.x/samples/data/vtest.avi"
 _Boxes = list[tuple[int, np.ndarray, str]]
+_MIN_EVIDENCE = 2  # observations before a track is worth identifying
 
 
 def _fit_verifier(pairs_path: Path) -> tuple[Verifier, float]:
@@ -71,21 +72,24 @@ def _fit_verifier(pairs_path: Path) -> tuple[Verifier, float]:
     return verifier, threshold
 
 
-def _flush(writer: cv2.VideoWriter, pending: list[tuple[np.ndarray, _Boxes]],
-           bound: dict[int, Resolution], keep: int) -> None:
-    """Annotate and write buffered frames until only ``keep`` remain pending."""
-    while len(pending) > keep:
-        frame, boxes = pending.pop(0)
-        for track_id, box, label in boxes:
-            res = bound.get(track_id)
-            color = _color(res.identity_id if res else track_id)
-            x1, y1, x2, y2 = (int(v) for v in box)
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            text = f"#{track_id} {label}" if res is None else (
-                f"#{res.identity_id} {label} "
-                + ("new" if res.is_new else f"seen before ({res.score:.2f})"))
-            cv2.putText(frame, text, (x1, max(y1 - 4, 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-        writer.write(frame)
+def _draw(frame: np.ndarray, boxes: _Boxes, bound: dict[int, Resolution]) -> None:
+    """Label every box with its memory identity.
+
+    A track and an identity are different numbering systems, so a box must never
+    show one and then the other — the same person appearing first as track #12
+    and later as identity #12 (a different person entirely) reads exactly like
+    the tracker swapping their ids. Every box here carries the identity, which
+    is assigned as soon as the track is confirmed and never changes afterwards.
+    """
+    for track_id, box, label in boxes:
+        res = bound.get(track_id)
+        if res is None:
+            continue  # not yet identified; drawing a provisional number would lie
+        color = _color(res.identity_id)
+        x1, y1, x2, y2 = (int(v) for v in box)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+        text = f"#{res.identity_id} {label} " + ("new" if res.is_new else f"seen before ({res.score:.2f})")
+        cv2.putText(frame, text, (x1, max(y1 - 4, 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
 
 def main() -> None:
@@ -114,10 +118,7 @@ def main() -> None:
     # which no player will open, in place of the last good one.
     part_path = out_path.with_suffix(".part.mp4")
     writer = cv2.VideoWriter(str(part_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
-    # A track is only resolved once it dies, max_age frames after its last
-    # sighting, so frames are held back that long before being written.
-    lag, fresh = tracker_cfg.max_age + 1, video_cfg.detect_every_n_frames
-    pending: list[tuple[np.ndarray, _Boxes]] = []
+    fresh = video_cfg.detect_every_n_frames
     bound: dict[int, Resolution] = {}
     first_frame: dict[int, int] = {}
     lost_count = rebound = created = frame_idx = 0
@@ -135,25 +136,40 @@ def main() -> None:
                 for (track, _), vec in zip(usable, encoder.encode_batch([c for _, c in usable])):
                     tracker.add_embedding(track, vec)
             first_frame.update({t.id: frame_idx for t in active if t.id not in first_frame})
-            # A track coasting on prediction alone gets no box drawn.
-            pending.append((frame, [(t.id, t.box.copy(), t.label) for t in active if t.time_since_update <= fresh]))
 
-            for lost in tracker.pop_lost():
-                lost_count += 1
-                if not lost.exemplars:
-                    first_frame.pop(lost.id, None)
+            # Identify a track as soon as it has enough appearance evidence,
+            # while it is still being watched, rather than waiting for it to die.
+            # This is what makes the number on screen stable from the moment the
+            # object appears, and it is also how a live system has to work: you
+            # cannot tell a viewer who somebody is only once they have left.
+            for track in active:
+                if track.id in bound or len(track.exemplars) < _MIN_EVIDENCE:
                     continue
-                res = reid.resolve(lost.label, lost.exemplars,
-                                   first_frame.pop(lost.id, frame_idx) / fps,
-                                   (frame_idx - lost.time_since_update) / fps, lost.hits)
-                bound[lost.id] = res
+                res = reid.resolve(track.label, track.exemplars,
+                                   first_frame.get(track.id, frame_idx) / fps,
+                                   frame_idx / fps, track.hits)
+                bound[track.id] = res
                 created += res.is_new
                 rebound += not res.is_new
 
-            _flush(writer, pending, bound, lag)
+            # A track coasting on prediction alone gets no box drawn.
+            _draw(frame, [(t.id, t.box.copy(), t.label) for t in active if t.time_since_update <= fresh], bound)
+            writer.write(frame)
+
+            for lost in tracker.pop_lost():
+                lost_count += 1
+                res = bound.get(lost.id)
+                first = first_frame.pop(lost.id, frame_idx) / fps
+                last = (frame_idx - lost.time_since_update) / fps
+                if res is not None and lost.exemplars:
+                    # Fold everything the track ended up seeing into the identity
+                    # it was already given, so memory keeps the better record
+                    # without the number on screen ever changing.
+                    memory.remember(lost.label, lost.exemplars, first, last,
+                                    lost.hits, identity_id=res.identity_id)
+
             frame_idx += 1
 
-        _flush(writer, pending, bound, 0)
         identity_count = len(memory)
         memory.save()
     cap.release()
@@ -161,7 +177,8 @@ def main() -> None:
     os.replace(part_path, out_path)
 
     print(f"{args.video.name}: {frame_idx} frames, threshold {threshold:.3f} (calibrated on track/identity scores)")
-    print(f"  tracks lost: {lost_count}   bound to existing: {rebound}   created new: {created}")
+    print(f"  tracks identified: {rebound + created}   recognized: {rebound}   new: {created}"
+          f"   (of {lost_count} that later ended)")
     print(f"  identities in {mem_cfg.db_path}: {identity_count}\nannotated -> {out_path}")
 
 
