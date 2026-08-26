@@ -301,12 +301,22 @@ class ReIdentifier:
         return best_id, best_score
 
     def _shortlist(self, label: str, obs: np.ndarray) -> list[int]:
-        """Candidate identity ids from the index, filtered to a matching label."""
+        """Candidate identity ids from the index, filtered to a matching label.
+
+        ``k`` counts identities, not index rows: ``VisualMemory.search`` already
+        over-fetches by the widest identity's exemplar count, so an identity
+        cannot crowd itself out of the result. What this width does control is
+        how far down the ranking the verifier is allowed to look, and a return
+        does not always rank first — measured against 18 stored identities, a
+        shortlist of 5 held the correct one 89% of the time, so one query in
+        nine was decided without the right answer present at all.
+        """
         if len(self.memory) == 0:
             return []
+        k = self.candidates
         seen: dict[int, None] = {}
         for query in obs:
-            for identity_id, _ in self.memory.search(query, k=self.candidates):
+            for identity_id, _ in self.memory.search(query, k=k):
                 seen.setdefault(identity_id, None)
         out = []
         for identity_id in seen:

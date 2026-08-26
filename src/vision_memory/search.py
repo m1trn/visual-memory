@@ -6,6 +6,7 @@ Pure vector store: no encoder, no metadata. Callers own the int64 ids
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Sequence
 
@@ -48,13 +49,29 @@ class VectorIndex:
         """Delete by id. Returns number actually removed."""
         return int(self._index.remove_ids(np.asarray(ids, dtype=np.int64)))
 
+    def ids(self) -> list[int]:
+        """Every id currently stored, in index order."""
+        return [int(v) for v in faiss.vector_to_array(self._index.id_map)]
+
     def get(self, id_: int) -> np.ndarray:
         """Return the stored vector for ``id_``."""
         return self._index.reconstruct(int(id_))
 
     def save(self, path: Path) -> None:
+        """Write the index, replacing any existing file only once it is complete.
+
+        Written to a sibling temp file and renamed, because a direct write is
+        not all-or-nothing: a crash, a kill, or a full disk part-way through
+        leaves a truncated file that ``faiss.read_index`` cannot open, which
+        loses every stored vector rather than the ones being added. Memory
+        writes the index before committing its database precisely so a failure
+        costs nothing, and that ordering only holds if this step cannot leave a
+        half-written file behind. Rename is atomic within a directory.
+        """
         path.parent.mkdir(parents=True, exist_ok=True)
-        faiss.write_index(self._index, str(path))
+        tmp = path.with_name(path.name + ".part")
+        faiss.write_index(self._index, str(tmp))
+        os.replace(tmp, path)
 
     @classmethod
     def load(cls, path: Path) -> "VectorIndex":

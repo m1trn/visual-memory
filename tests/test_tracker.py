@@ -19,6 +19,7 @@ def _cfg(**overrides) -> TrackerConfig:
         low_conf=0.1,
         contested_iou=0.5,
         max_centre_distance=2.0,
+        measurement_noise=1.0,
         veto_views=3,
         claim_margin=0.0,
         appearance_veto=0.0,

@@ -304,22 +304,35 @@ class VisualMemory:
         self._db.commit()
 
     def _reconcile(self) -> None:
-        """Drop exemplar rows whose vectors are missing from the loaded index.
+        """Make the index and the database agree about which vectors exist.
 
         Guards against an index and a database that were not written together —
         a half-completed save, or a stale index file beside a fresh database
         (exemplar ids restart at 1, so those would otherwise collide).
+
+        Both directions have to be repaired. An exemplar row whose vector is
+        missing is unusable, so the row goes. A vector whose row is missing
+        belongs to no identity and can never be resolved to one, but it stays
+        searchable: it occupies a slot in every top-k it scores into, pushing a
+        real candidate out of the shortlist, and it survives every later save,
+        so a database that is reset while the index is kept leaks vectors
+        permanently. Neither side can be trusted to be the newer one, so what
+        they do not agree on is dropped.
         """
         rows = self._db.execute("SELECT vector_id FROM exemplars").fetchall()
-        orphans = []
-        for (vid,) in rows:
+        known = {int(vid) for (vid,) in rows}
+        orphan_rows = []
+        for vid in known:
             try:
-                self._index.get(int(vid))
+                self._index.get(vid)
             except Exception:
-                orphans.append((int(vid),))
-        if orphans:
-            self._db.executemany("DELETE FROM exemplars WHERE vector_id = ?", orphans)
+                orphan_rows.append((vid,))
+        if orphan_rows:
+            self._db.executemany("DELETE FROM exemplars WHERE vector_id = ?", orphan_rows)
             self._db.commit()
+        stray = [vid for vid in self._index.ids() if vid not in known]
+        if stray:
+            self._index.remove(stray)
 
     def close(self) -> None:
         """Persist everything and release the database handle."""

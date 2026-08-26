@@ -38,6 +38,7 @@ class TrackerConfig:
     iou_threshold: float
     contested_iou: float
     max_centre_distance: float
+    measurement_noise: float
     high_conf: float
     low_conf: float
     veto_views: int

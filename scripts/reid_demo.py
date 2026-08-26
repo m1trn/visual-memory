@@ -190,10 +190,19 @@ def main() -> None:
             for track in active:
                 if track.id in bound or len(track.exemplars) < _MIN_EVIDENCE:
                     continue
+                # Both maps are rebuilt from `bound` on every pass, not reused
+                # from the snapshot above: a track resolved earlier in this same
+                # frame has already taken an identity, and a stale snapshot
+                # neither marks it unavailable nor lists the score it was won
+                # with. A later track would then be free to take it without
+                # clearing `claim_margin`, which is the one check standing
+                # between two similar-looking people and a swapped number.
+                taken_now = {r.identity_id: r.score for r in bound.values()}
                 res = reid.resolve(track.label, track.exemplars,
                                    first_frame.get(track.id, frame_idx) / fps,
                                    frame_idx / fps, track.hits, box=track.box,
-                                   unavailable=in_use, held_by_others=held_by_others)
+                                   unavailable=in_use | set(taken_now),
+                                   held_by_others={**held_by_others, **taken_now})
                 # If it took an identity from someone, that holder must give it up.
                 displaced = [t for t in active if t.id != track.id and t.id in bound
                              and bound[t.id].identity_id == res.identity_id]

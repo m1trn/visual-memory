@@ -299,3 +299,32 @@ def test_an_identity_someone_is_wearing_now_cannot_be_taken(tmp_path) -> None:
         # Once the first is gone, the identity is available again.
         later = rid.resolve("bag", obs, 30.0, 31.0, 4, unavailable=set())
         assert not later.is_new
+
+
+def test_an_identity_cannot_crowd_itself_out_of_the_shortlist(tmp_path) -> None:
+    """``k`` counts identities, so exemplars of one must not consume the width.
+
+    A decoy sits marginally closer to the query than the true match. Both belong
+    on a shortlist of two, and choosing between them is the verifier's job; the
+    index must not spend both slots on the decoy's five exemplars.
+    """
+    rng = np.random.default_rng(7)
+    q = np.zeros(DIM, dtype=np.float32); q[0] = 1.0
+    o = np.zeros(DIM, dtype=np.float32); o[1] = 1.0
+
+    def near(weight: float, n: int) -> list[np.ndarray]:
+        out = []
+        for _ in range(n):
+            v = weight * q + np.sqrt(1 - weight ** 2) * o
+            v = v + rng.normal(scale=0.005, size=DIM).astype(np.float32)
+            out.append((v / np.linalg.norm(v)).astype(np.float32))
+        return out
+
+    with VisualMemory(cfg(tmp_path), DIM) as mem:
+        rid = ReIdentifier(mem, FakeVerifier(0.0), candidates=2)
+        decoy = mem.remember("bag", near(0.99, 5), 0.0, 1.0, 5)
+        wanted = mem.remember("bag", near(0.95, 5), 2.0, 3.0, 5)
+
+        shortlist = rid._shortlist("bag", np.stack([q, q]))
+        assert decoy in shortlist
+        assert wanted in shortlist, "one identity consumed the whole shortlist"

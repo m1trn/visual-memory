@@ -16,9 +16,15 @@ encoder:
 detector:
   name: yolo11n
 
-  model_path: data/models/yolo11n.onnx
+  model_path: data/models/yolo11n_768.onnx
 
-  input_size: 640
+  input_size: 768          # the ONNX graph is exported at a fixed input size, so this must match the
+                           # file above. 768 is the clip's native width: at 640 the frame was letterboxed
+                           # DOWN, discarding pixels already in hand, and people bunched at a distance are
+                           # only 17-27 px wide. Measured over 40 frames: 640 finds 5.1 people/frame in
+                           # 161 ms, 768 finds 5.7 in 201 ms, 960 finds 4.5 in 294 ms. 960 is worse as
+                           # well as slower because YOLO11n is trained at 640 and upsampling puts people
+                           # at a scale it never saw. Re-export with `yolo export format=onnx imgsz=768`.
 
   conf_threshold: 0.1
 
@@ -47,6 +53,12 @@ tracker:
                             # Tuned at detect_every_n_frames: 3 - motion per interval scales with the frame skip,
 
                             # so raising that cadence needs this raised too (roughly 0.7 x the gap in frames).
+
+  measurement_noise: 0.25   # how much the filter distrusts a detection, relative to its own prediction.
+                            # Below 1.0 means detections win: the corrected box lands on the detection
+                            # (overlap 0.929 -> 0.966) instead of trailing two thirds of the way there,
+                            # which is what made a box look slow to recover after an occlusion. Pushing
+                            # it lower still fits velocity to detection jitter and costs track ids.
 
   high_conf: 0.5           # detections >= this go to the first association pass
 
@@ -107,7 +119,12 @@ reid:
   seed: 0
 
 search:
-  default_k: 5
+  default_k: 20           # identities the index shortlists before the verifier decides. Counts
+                          # identities, not stored vectors - memory.search over-fetches rows so an
+                          # identity cannot crowd itself out. At 5 the correct identity was present
+                          # only 89% of the time on 18 stored identities, and a candidate that is
+                          # never shortlisted can never be matched however good the threshold is; 20
+                          # holds it at 100%. Still a shortlist: 30 candidates offered out of 1018.
 
 appearance:
   model: reid             # reid | encoder. A network trained to tell people apart beats a general
