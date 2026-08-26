@@ -328,3 +328,23 @@ def test_an_identity_cannot_crowd_itself_out_of_the_shortlist(tmp_path) -> None:
         shortlist = rid._shortlist("bag", np.stack([q, q]))
         assert decoy in shortlist
         assert wanted in shortlist, "one identity consumed the whole shortlist"
+
+
+def test_a_claim_cannot_take_an_identity_that_was_co_alive(tmp_path) -> None:
+    """Two objects on screen at once are different objects, however alike.
+
+    ``_best_candidate`` refuses a co-alive identity outright; the takeover path
+    must apply the same fact, or a strong appearance match can steal an
+    identity from an object that was provably visible at the same time.
+    """
+    e = np.eye(DIM, dtype=np.float32)
+    obs = cluster(e[4], 4, seed=21)
+    with VisualMemory(cfg(tmp_path), DIM) as mem:
+        rid = ReIdentifier(mem, FakeVerifier(0.0))  # appearance accepts anything
+        holder = rid.resolve("bag", obs, 0.0, 10.0, 4)
+        # A second object, alive from 5.0 - overlapping the holder's lifetime -
+        # scores perfectly against the stored record and offers a huge margin.
+        taken = rid.resolve("bag", obs, 5.0, 6.0, 4,
+                            unavailable={holder.identity_id},
+                            held_by_others={holder.identity_id: 0.1})
+        assert taken.is_new and taken.identity_id != holder.identity_id

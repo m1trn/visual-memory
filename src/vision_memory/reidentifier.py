@@ -206,6 +206,12 @@ class ReIdentifier:
             identity = self.memory.get(identity_id)
             if identity is None or identity.label != label:
                 continue
+            # The same hard fact _best_candidate enforces: an identity whose
+            # lifetime overlaps this track's was on screen at the same time as
+            # it, so however well the embeddings agree they are two different
+            # objects, and no strength of claim can take it.
+            if identity.first_seen < last_seen and first_seen < identity.last_seen:
+                continue
             exemplars = self.memory.exemplar_vectors(identity_id)
             if len(exemplars) == 0:
                 continue
