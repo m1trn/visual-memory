@@ -163,16 +163,20 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data", type=Path, default=Path("data/mot"))
     parser.add_argument("--max-frames", type=int, default=None)
+    parser.add_argument("--cache", type=Path, default=None,
+                        help="write/read the observation cache, keeping tuning and "
+                             "held-out sequences apart")
     parser.add_argument("--report", action="store_true",
                         help="fit from the existing cache without re-running the pipeline")
     args = parser.parse_args()
 
-    if args.report and CACHE.exists():
-        records = pickle.loads(CACHE.read_bytes())
+    cache = args.cache or CACHE
+    if args.report and cache.exists():
+        records = pickle.loads(cache.read_bytes())
     else:
         records = build_cache(args.data, args.max_frames)
-        CACHE.parent.mkdir(parents=True, exist_ok=True)
-        CACHE.write_bytes(pickle.dumps(records))
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_bytes(pickle.dumps(records))
     if not records:
         raise SystemExit("no attributed observations; is there labelled data under --data?")
 

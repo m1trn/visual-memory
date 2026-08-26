@@ -96,7 +96,7 @@ reid:
   verifier: cosine        # cosine | logistic
   min_pair_gap: 2         # observations apart, so a positive pair is not two near-identical frames
   max_pairs_per_track: 200 # cap per track, or one long-lived object dominates the positive class
-  max_false_merge_rate: 0.01 # share of provably-different pairs the binding boundary may accept.
+  max_false_merge_rate: 0.02 # share of provably-different pairs the binding boundary may accept.
                             # Showing a viewer the wrong name is worse than failing to recognize
                             # someone, so the boundary is set by this rather than by balanced error.
                             # 0.02 was argued for, never measured; scored against MOT17-02's labelled
@@ -107,7 +107,11 @@ reid:
                             # 46.1-46.5% with 29 switches. Below 0.70 re-id is actively destructive:
                             # 0.55 collapses to 36.9% with 53 switches, far worse than not binding at
                             # all, because a wrong merge costs more identity than a correct recovery
-                            # gains. This rate lands the calibration at 0.723, inside that band.
+                            # gains. This rate is NOT independent of observation_quantile: raising
+                            # that to 0.9 lifts every score, so the same 2% now lands at 0.755 where
+                            # it once landed at 0.704. Re-swept at that quantile, 0.723-0.773 is flat
+                            # at 47.0-47.3% IDF1 with 29 switches and 0.800 collapses back to the
+                            # floor, so the boundary is placed mid-band rather than at the peak.
   claim_margin: 0.08      # how much better a match must be to take an identity from its current
                           # holder. Two similar-looking people both score against one stored
                           # record, and without this whichever appeared first keeps it for good.
@@ -121,9 +125,23 @@ reid:
                           # space and time is strong, and is the evidence the tracker uses and re-id lacked.
   spatial_scale: 2.0      # box widths over which that continuity evidence decays
   temporal_scale: 2.0     # seconds over which it decays
-  observation_quantile: 0.5  # fraction of a track that must agree with a stored identity. 0.75 binds
-                            # 3 more of 28 tracks but nearly doubles false merges (66 vs 39 of 352),
-                            # and a false merge is unrecoverable while a miss just costs an identity
+  observation_quantile: 0.9  # how much of a track must agree with a stored identity. Chosen on
+                            # hand-labelled
+                            # returns, where the earlier reasoning (a quantile is more robust than a
+                            # max) turns out to cost accuracy rather than buy it. A track that turns
+                            # or is partly hidden produces observations that genuinely match nothing
+                            # stored, and a median lets those outvote the views that do match.
+                            # Separating real returns from different people, K=5: AUROC 0.908 at 0.5,
+                            # 0.926 at 0.75, 0.942 at 0.9, 0.951 at 1.0 - and on a sequence held out
+                            # of this choice, 0.968 / 0.971 / 0.976 / 0.988, monotone on both.
+                            # Returns recovered at a 1% false-merge budget rise 50% -> 56% and,
+                            # held out, 70% -> 80%.
+                            # Stops short of 1.0, which scores best on that data but lets a SINGLE
+                            # frame bind a whole track. The labelled evaluation cannot see that risk:
+                            # it attributes each observation to a person separately, so a track that
+                            # swapped identity part-way contributes to two people and never appears
+                            # as a mixed query. test_a_lone_lucky_frame_does_not_carry_the_track
+                            # covers exactly that case, and 1.0 fails it while 0.9 passes.
   test_fraction: 0.3      # held out BY TRACK - a track must never contribute to both sides
   seed: 0
 

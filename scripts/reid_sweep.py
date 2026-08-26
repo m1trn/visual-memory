@@ -143,6 +143,7 @@ def main() -> None:
     parser.add_argument("--data", type=Path, default=Path("data/mot"))
     parser.add_argument("--max-frames", type=int, default=None)
     parser.add_argument("--rebuild", action="store_true")
+    parser.add_argument("--cache", type=Path, default=None)
     args = parser.parse_args()
 
     mm = metrics_module()
@@ -152,13 +153,15 @@ def main() -> None:
         raise SystemExit(f"no labelled sequences under {args.data}")
     sequence = sequences[0]
 
-    if CACHE.exists() and not args.rebuild:
-        frames = pickle.loads(CACHE.read_bytes())
+    cache = args.cache or CACHE
+    if cache.exists() and not args.rebuild:
+        frames = pickle.loads(cache.read_bytes())
         print(f"{sequence.name}: {len(frames)} frames from cache")
     else:
         print(f"{sequence.name}: caching detections and embeddings", flush=True)
         frames = build_cache(sequence, args.max_frames)
-        CACHE.write_bytes(pickle.dumps(frames))
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_bytes(pickle.dumps(frames))
 
     dim = build_describer(load_appearance_config()).dim
     fitted = load_reid_config()
@@ -169,7 +172,7 @@ def main() -> None:
     accs.append(_score(sequence, by_tracker, args.max_frames))
     names.append("tracker only")
 
-    for threshold in (0.60, 0.70, 0.723, 0.75, 0.80):
+    for threshold in (0.723, 0.740, 0.755, 0.773, 0.800):
         _, by_reid, count = run(frames, sequence, threshold, dim)
         accs.append(_score(sequence, by_reid, args.max_frames))
         names.append(f"re-id @ {threshold:.3f}")
