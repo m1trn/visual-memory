@@ -83,6 +83,7 @@ class ReIdentifier:
         last_seen: float,
         appearances: int,
         box: np.ndarray | None = None,
+        unavailable: frozenset[int] | set[int] | None = None,
     ) -> Resolution:
         """Bind these observations into the best matching identity, or create one.
 
@@ -95,7 +96,9 @@ class ReIdentifier:
         brief occlusion better than re-identification does.
         """
         obs = _stack_unit(embeddings, self.memory.dim)
-        best_id, best_score = self._best_candidate(label, obs, first_seen, last_seen)
+        best_id, best_score = self._best_candidate(
+            label, obs, first_seen, last_seen, unavailable=unavailable
+        )
 
         required = self.threshold
         if best_id is not None and box is not None:
@@ -111,6 +114,62 @@ class ReIdentifier:
         identity_id = self.memory.remember(label, obs, first_seen, last_seen, appearances)
         self._remember_where(identity_id, last_seen, box)
         return Resolution(identity_id=identity_id, score=best_score, is_new=True)
+
+    def reconsider(
+        self,
+        held: int,
+        label: str,
+        embeddings: Sequence[np.ndarray],
+        first_seen: float,
+        last_seen: float,
+        appearances: int = 0,
+        box: np.ndarray | None = None,
+        unavailable: frozenset[int] | set[int] | None = None,
+    ) -> Resolution | None:
+        """Revisit a binding now that the track has more to say for itself.
+
+        A track is identified early so the number on screen is stable from the
+        moment the object appears, but that first decision rests on two
+        observations. Without a way back, an object called new can never reclaim
+        the record of its earlier visit however obvious the match later becomes,
+        which is exactly how one person ends up holding two identities.
+
+        If a different identity now matches better than the one being held, the
+        two records are merged. The older record wins, so the object stays
+        anchored to when it was really first seen. Returns the new resolution,
+        or None when nothing changed.
+        """
+        obs = _stack_unit(embeddings, self.memory.dim)
+        best_id, best_score = self._best_candidate(
+            label, obs, first_seen, last_seen, exclude=held, unavailable=unavailable
+        )
+        if best_id is None:
+            return None
+        required = self.threshold
+        if box is not None:
+            required -= self.cfg.continuity_bonus * self._continuity(best_id, first_seen, box)
+        # Merging rewrites history, so demand clearly more than a fresh binding.
+        if best_score < required + self.cfg.merge_margin:
+            return None
+        # A merge joins two RECORDS, so the two records must themselves be
+        # compatible. Checking only the track against the candidate misses the
+        # case that matters: a late-arriving track need not overlap an old
+        # identity, yet merging would still fuse that old identity with the one
+        # the track is holding - and those two may plainly have coexisted.
+        mine, theirs = self.memory.get(held), self.memory.get(best_id)
+        if mine is None or theirs is None:
+            return None
+        if mine.first_seen < theirs.last_seen and theirs.first_seen < mine.last_seen:
+            return None
+        keep, absorb = sorted((held, best_id))
+        identity_id = self.memory.merge(keep, absorb)
+        # The merge combines what was already stored; the track has since seen
+        # more, and that belongs to the surviving record too.
+        self.memory.remember(label, list(obs), first_seen, last_seen, appearances,
+                             identity_id=identity_id)
+        self._recent.pop(absorb, None)
+        self._remember_where(identity_id, last_seen, box)
+        return Resolution(identity_id=identity_id, score=best_score, is_new=False)
 
     def _continuity(self, identity_id: int, now: float, box: np.ndarray) -> float:
         """How strongly position and timing say this is the same object, in [0, 1].
@@ -144,12 +203,17 @@ class ReIdentifier:
         it occupied in its first second.
         """
         self._recent[identity_id] = (when, np.asarray(box, dtype=np.float64))
+        # The stored interval must grow with the object, or the co-alive rule
+        # below reads a stale end-time and lets two simultaneous objects merge.
+        self.memory.touch(identity_id, when)
 
     def _remember_where(self, identity_id: int, when: float, box: np.ndarray | None) -> None:
         if box is not None:
             self.note_seen(identity_id, when, box)
 
-    def _best_candidate(self, label: str, obs: np.ndarray, first_seen: float, last_seen: float) -> tuple[int | None, float]:
+    def _best_candidate(self, label: str, obs: np.ndarray, first_seen: float, last_seen: float,
+                        exclude: int | None = None,
+                        unavailable: frozenset[int] | set[int] | None = None) -> tuple[int | None, float]:
         """Highest-scoring same-label identity, or ``(None, -inf)`` if there is none.
 
         An identity whose lifetime overlaps this track's is skipped outright. One
@@ -162,7 +226,18 @@ class ReIdentifier:
         """
         best_id: int | None = None
         best_score = float("-inf")
+        blocked = unavailable or ()
         for identity_id in self._shortlist(label, obs):
+            if identity_id == exclude:
+                continue
+            # An identity that some other object is wearing right now is not
+            # available, whatever the stored timestamps say. Comparing intervals
+            # cannot settle this: an identity last seen at this very instant and
+            # a track starting at this very instant read as consecutive under any
+            # strict comparison, and as overlapping under any loose one, which
+            # would then forbid every genuine return.
+            if identity_id in blocked:
+                continue
             identity = self.memory.get(identity_id)
             # Strict: a track ending exactly as another begins is sequential,
             # not simultaneous, and is a perfectly good re-identification.

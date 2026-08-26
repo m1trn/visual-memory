@@ -87,6 +87,11 @@ reid:
   max_false_merge_rate: 0.02 # share of provably-different pairs the binding boundary may accept.
                             # Showing a viewer the wrong name is worse than failing to recognize
                             # someone, so the boundary is set by this rather than by balanced error.
+  merge_margin: 0.05      # extra evidence needed to merge two existing records, beyond what a fresh
+                          # binding needs. Merging rewrites history, so it should be the harder call.
+  reconsider_every: 15    # frames between revisiting a track's identity as its evidence grows. An
+                          # identity assigned from two observations must be allowed to improve, or an
+                          # object called new can never reclaim the record of its earlier visit.
   continuity_bonus: 0.15  # how much the appearance bar may be lowered for an object that reappears where
                           # another vanished moments ago. Appearance across a gap is weak; continuity in
                           # space and time is strong, and is the evidence the tracker uses and re-id lacked.

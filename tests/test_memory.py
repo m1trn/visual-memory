@@ -177,3 +177,35 @@ def test_prototype_is_writeable(tmp_path) -> None:
         proto = mem.get(ident).prototype
         proto += 1.0  # must not raise
         assert proto.flags.writeable
+
+
+def test_merge_keeps_the_older_record_and_absorbs_the_other(tmp_path) -> None:
+    cfg = MemoryConfig(db_path=str(tmp_path / "m.db"), index_path=str(tmp_path / "m.faiss"),
+                       exemplars_per_identity=5, reid_threshold=0.8)
+    with VisualMemory(cfg, 8) as mem:
+        early = mem.remember("bag", list(_unit(3, 8, seed=1)), 0.0, 5.0, 3)
+        later = mem.remember("bag", list(_unit(3, 8, seed=2)), 20.0, 30.0, 7)
+        assert len(mem) == 2
+
+        kept = mem.merge(early, later)
+        assert kept == early and len(mem) == 1 and mem.get(later) is None
+
+        merged = mem.get(early)
+        assert merged.first_seen == 0.0 and merged.last_seen == 30.0
+        assert merged.appearances == 10                       # both histories
+        assert abs(np.linalg.norm(merged.prototype) - 1.0) < 1e-5
+        assert 0 < len(mem.exemplar_vectors(early)) <= cfg.exemplars_per_identity
+
+    # and it survives a reopen
+    with VisualMemory(cfg, 8) as mem:
+        assert len(mem) == 1 and mem.get(early) is not None
+
+
+def test_merging_a_missing_identity_is_an_error(tmp_path) -> None:
+    cfg = MemoryConfig(db_path=str(tmp_path / "m.db"), index_path=str(tmp_path / "m.faiss"),
+                       exemplars_per_identity=5, reid_threshold=0.8)
+    with VisualMemory(cfg, 8) as mem:
+        only = mem.remember("bag", list(_unit(2, 8)), 0.0, 1.0, 2)
+        assert mem.merge(only, only) == only        # merging with itself is a no-op
+        with pytest.raises(KeyError):
+            mem.merge(only, 999)

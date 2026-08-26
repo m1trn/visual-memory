@@ -63,6 +63,8 @@ class ReidConfig:
     max_pairs_per_track: int
     observation_quantile: float
     max_false_merge_rate: float
+    merge_margin: float
+    reconsider_every: int
     continuity_bonus: float
     spatial_scale: float
     temporal_scale: float

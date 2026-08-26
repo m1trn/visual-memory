@@ -110,6 +110,7 @@ def main() -> None:
     describer = AppearanceDescriber(encoder, load_appearance_config())
     tracker = ByteTracker(tracker_cfg)
     verifier, threshold = _fit_verifier(_DEFAULT_CACHE)
+    reid_cfg = load_reid_config()
     cap = cv2.VideoCapture(str(args.video))
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
@@ -123,7 +124,7 @@ def main() -> None:
     fresh = video_cfg.detect_every_n_frames
     bound: dict[int, Resolution] = {}
     first_frame: dict[int, int] = {}
-    lost_count = rebound = created = frame_idx = 0
+    lost_count = rebound = created = reclaimed = frame_idx = 0
     with VisualMemory(mem_cfg, describer.dim) as memory:
         reid = ReIdentifier(memory, verifier, threshold=threshold)
         while frame_idx < args.max_frames:
@@ -144,12 +145,33 @@ def main() -> None:
             # This is what makes the number on screen stable from the moment the
             # object appears, and it is also how a live system has to work: you
             # cannot tell a viewer who somebody is only once they have left.
+            # A track already identified keeps being reconsidered: its first
+            # binding rested on two observations, and it must be able to reclaim
+            # an earlier record once it has more to show for itself.
+            # Identities worn by something on screen right now are off limits.
+            in_use = {bound[t.id].identity_id for t in active
+                      if t.id in bound and t.time_since_update <= fresh}
+
+            for track in active:
+                held = bound.get(track.id)
+                if held is not None and track.exemplars and frame_idx % reid_cfg.reconsider_every == 0:
+                    revised = reid.reconsider(held.identity_id, track.label, track.exemplars,
+                                              first_frame.get(track.id, frame_idx) / fps,
+                                              frame_idx / fps, track.hits, box=track.box,
+                                              unavailable=in_use - {held.identity_id})
+                    if revised is not None:
+                        merged_away = {t: r for t, r in bound.items() if r.identity_id == held.identity_id}
+                        for t in merged_away:
+                            bound[t] = revised
+                        reclaimed += 1
+
             for track in active:
                 if track.id in bound or len(track.exemplars) < _MIN_EVIDENCE:
                     continue
                 res = reid.resolve(track.label, track.exemplars,
                                    first_frame.get(track.id, frame_idx) / fps,
-                                   frame_idx / fps, track.hits, box=track.box)
+                                   frame_idx / fps, track.hits, box=track.box,
+                                   unavailable=in_use)
                 bound[track.id] = res
                 created += res.is_new
                 rebound += not res.is_new
@@ -188,6 +210,7 @@ def main() -> None:
     print(f"{args.video.name}: {frame_idx} frames, threshold {threshold:.3f} (calibrated on track/identity scores)")
     print(f"  tracks identified: {rebound + created}   recognized: {rebound}   new: {created}"
           f"   (of {lost_count} that later ended)")
+    print(f"  earlier records reclaimed on reflection: {reclaimed}")
     print(f"  identities in {mem_cfg.db_path}: {identity_count}\nannotated -> {out_path}")
 
 

@@ -207,3 +207,95 @@ def test_continuity_lets_a_weak_appearance_match_bind(tmp_path) -> None:
         # Same appearance evidence, but far away and long after: nothing to lend.
         far = rid.resolve("bag", returning, 400.0, 401.0, 4, box=box + 900.0)
         assert far.is_new
+
+
+def test_a_track_can_reclaim_an_earlier_record_it_first_missed(tmp_path) -> None:
+    """The first binding rests on two observations; it must be allowed to improve."""
+    e = np.eye(DIM, dtype=np.float32)
+    earlier = [e[6].copy() for _ in range(4)]
+    with VisualMemory(cfg(tmp_path), DIM) as mem:
+        rid = ReIdentifier(mem, FakeVerifier(0.9))
+        old = rid.resolve("bag", earlier, 0.0, 5.0, 4)
+
+        # The same object returns, but its first two views are unlike anything
+        # stored, so it is called new.
+        weak = [(np.sqrt(0.5) * e[6] + np.sqrt(0.5) * e[7]).astype(np.float32)] * 2
+        provisional = rid.resolve("bag", weak, 20.0, 21.0, 2)
+        assert provisional.is_new and provisional.identity_id != old.identity_id
+        assert len(mem) == 2
+
+        # It keeps being watched, and now plainly matches the earlier record.
+        revised = rid.reconsider(provisional.identity_id, "bag", earlier, 20.0, 30.0, appearances=6)
+        assert revised is not None
+        assert revised.identity_id == old.identity_id      # the older record wins
+        assert len(mem) == 1                               # and the duplicate is gone
+        merged = mem.get(old.identity_id)
+        assert merged.first_seen == 0.0 and merged.last_seen == 30.0
+
+
+def test_reconsider_leaves_a_sound_binding_alone(tmp_path) -> None:
+    e = np.eye(DIM, dtype=np.float32)
+    with VisualMemory(cfg(tmp_path), DIM) as mem:
+        rid = ReIdentifier(mem, FakeVerifier(0.9))
+        a = rid.resolve("bag", [e[6].copy() for _ in range(4)], 0.0, 5.0, 4)
+        b = rid.resolve("bag", [e[7].copy() for _ in range(4)], 20.0, 25.0, 4)
+        assert b.identity_id != a.identity_id
+        # b looks nothing like a, so there is nothing to merge.
+        assert rid.reconsider(b.identity_id, "bag", [e[7].copy() for _ in range(4)], 20.0, 30.0, appearances=4) is None
+        assert len(mem) == 2
+
+
+def test_a_live_identity_cannot_be_claimed_by_someone_on_screen_with_it(tmp_path) -> None:
+    """The classic failure: one number ending up on two people at once.
+
+    An identity's stored end-time must follow the object while it is still
+    visible. If it stays frozen at creation, a track that starts later looks
+    sequential rather than simultaneous, and binds to a person still on screen.
+    """
+    e = np.eye(DIM, dtype=np.float32)
+    obs = cluster(e[5], 4, seed=21)
+    with VisualMemory(cfg(tmp_path), DIM) as mem:
+        rid = ReIdentifier(mem, FakeVerifier(0.0))  # appearance accepts anything
+        first = rid.resolve("bag", obs, 0.0, 1.0, 4, box=np.array([0.0, 0.0, 40.0, 80.0]))
+        # It stays on screen until t=20.
+        for t in range(2, 21):
+            rid.note_seen(first.identity_id, float(t), np.array([0.0, 0.0, 40.0, 80.0]))
+        # A second object appears at t=10, while the first is still visible.
+        second = rid.resolve("bag", obs, 10.0, 12.0, 4, box=np.array([0.0, 0.0, 40.0, 80.0]))
+        assert second.is_new
+        assert second.identity_id != first.identity_id
+
+
+def test_reconsider_will_not_fuse_two_records_that_coexisted(tmp_path) -> None:
+    """A merge joins two records, so those two must be compatible with each other.
+
+    Checking only the track against the candidate is not enough: a track that
+    arrives late need not overlap an old identity, but merging would still fuse
+    that old identity with the one the track holds.
+    """
+    e = np.eye(DIM, dtype=np.float32)
+    obs = cluster(e[1], 4, seed=31)
+    with VisualMemory(cfg(tmp_path), DIM) as mem:
+        rid = ReIdentifier(mem, FakeVerifier(0.0))  # appearance accepts anything
+        early = rid.resolve("bag", obs, 0.0, 5.0, 4)
+        overlapping = rid.resolve("bag", obs, 4.0, 27.0, 4)   # coexisted with `early`
+        assert overlapping.is_new and len(mem) == 2
+
+        # A late track holding `overlapping` must not drag it into `early`.
+        assert rid.reconsider(overlapping.identity_id, "bag", obs, 26.0, 30.0, appearances=4) is None
+        assert len(mem) == 2
+
+
+def test_an_identity_someone_is_wearing_now_cannot_be_taken(tmp_path) -> None:
+    """Interval arithmetic cannot settle this; the caller knows who is on screen."""
+    e = np.eye(DIM, dtype=np.float32)
+    obs = cluster(e[2], 4, seed=41)
+    with VisualMemory(cfg(tmp_path), DIM) as mem:
+        rid = ReIdentifier(mem, FakeVerifier(0.0))  # appearance accepts anything
+        first = rid.resolve("bag", obs, 0.0, 2.1, 4)
+        # Another object appears at the very instant the first was last seen.
+        taken = rid.resolve("bag", obs, 2.1, 2.1, 4, unavailable={first.identity_id})
+        assert taken.is_new and taken.identity_id != first.identity_id
+        # Once the first is gone, the identity is available again.
+        later = rid.resolve("bag", obs, 30.0, 31.0, 4, unavailable=set())
+        assert not later.is_new

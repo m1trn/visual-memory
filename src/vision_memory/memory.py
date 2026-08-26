@@ -184,6 +184,62 @@ class VisualMemory:
         self._index.add(pool[keep], new_ids)
         return identity_id
 
+    def touch(self, identity_id: int, when: float) -> None:
+        """Extend an identity's last-seen time because it is visible right now.
+
+        Without this an identity's end-time is frozen at the moment it was
+        first stored, even while its object is still being watched. Anything
+        that reasons about *when* an identity existed then reads a stale
+        interval: two objects plainly on screen together look sequential, and
+        the rule that forbids merging simultaneous objects stops firing.
+        """
+        self._db.execute(
+            "UPDATE identities SET last_seen = max(last_seen, ?) WHERE id = ?",
+            (float(when), int(identity_id)),
+        )
+
+    def merge(self, keep_id: int, absorb_id: int) -> int:
+        """Fold one identity into another and delete it. Returns ``keep_id``.
+
+        Used when later evidence shows two records are the same object — the
+        second sighting of somebody whose first sighting is already stored. The
+        older record is the one kept, so the object's history stays anchored to
+        when it was actually first seen rather than to whenever the mistake was
+        noticed.
+        """
+        if keep_id == absorb_id:
+            return keep_id
+        keeper, absorbed = self.get(keep_id), self.get(absorb_id)
+        if keeper is None or absorbed is None:
+            raise KeyError(f"cannot merge {absorb_id} into {keep_id}: one does not exist")
+
+        pool = [v for v in (self.exemplar_vectors(keep_id), self.exemplar_vectors(absorb_id)) if len(v)]
+        combined = np.concatenate(pool) if pool else np.empty((0, self.dim), dtype=np.float32)
+        weight = float(keeper.appearances + absorbed.appearances) or 1.0
+        prototype = _normalize(
+            (keeper.appearances * keeper.prototype + absorbed.appearances * absorbed.prototype) / weight
+        )
+        self._db.execute(
+            "UPDATE identities SET first_seen = ?, last_seen = ?, appearances = ?, prototype = ?"
+            " WHERE id = ?",
+            (min(keeper.first_seen, absorbed.first_seen), max(keeper.last_seen, absorbed.last_seen),
+             int(keeper.appearances + absorbed.appearances), prototype.tobytes(), keep_id),
+        )
+        for identity_id in (keep_id, absorb_id):
+            ids = self._exemplar_ids(identity_id)
+            if ids:
+                self._index.remove(ids)
+                self._db.executemany("DELETE FROM exemplars WHERE vector_id = ?", [(i,) for i in ids])
+        self._db.execute("DELETE FROM identities WHERE id = ?", (absorb_id,))
+        if len(combined):
+            keep = select_diverse(combined, self.cfg.exemplars_per_identity)
+            new_ids = []
+            for _ in range(len(keep)):
+                cur = self._db.execute("INSERT INTO exemplars (identity_id) VALUES (?)", (keep_id,))
+                new_ids.append(int(cur.lastrowid))
+            self._index.add(combined[keep], new_ids)
+        return keep_id
+
     def search(self, embedding: np.ndarray, k: int = 5) -> list[tuple[int, float]]:
         """Top-``k`` identities by best-matching exemplar, best cosine first."""
         if len(self._index) == 0:
