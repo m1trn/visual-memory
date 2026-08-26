@@ -63,6 +63,7 @@ class ReidConfig:
     max_pairs_per_track: int
     observation_quantile: float
     max_false_merge_rate: float
+    claim_margin: float
     merge_margin: float
     reconsider_every: int
     continuity_bonus: float
@@ -74,6 +75,8 @@ class ReidConfig:
 
 @dataclass(frozen=True)
 class AppearanceConfig:
+    model: str
+    reid_model_path: str
     colour_weight: float
     colour_bands: int
     deep_upper_fraction: float

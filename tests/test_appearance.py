@@ -53,3 +53,38 @@ def test_config_is_wired() -> None:
     cfg = load_appearance_config()
     assert isinstance(cfg, AppearanceConfig)
     assert 0.0 <= cfg.colour_weight <= 1.0 and cfg.colour_bands >= 1
+
+
+def test_reid_model_sees_the_whole_box_and_encoder_only_the_top() -> None:
+    """A re-id network is trained on whole-body crops; a general encoder is not."""
+    import dataclasses
+
+    from vision_memory.appearance import build_embedder
+
+    cfg = load_appearance_config()
+    if cfg.model != "reid":
+        pytest.skip("configured appearance model is not the re-id network")
+    _, upper = build_embedder(cfg)
+    assert upper == 1.0
+
+    encoder_cfg = dataclasses.replace(cfg, model="encoder")
+    assert encoder_cfg.deep_upper_fraction < 1.0
+
+    with pytest.raises(ValueError):
+        build_embedder(dataclasses.replace(cfg, model="nonsense"))
+
+
+def test_reid_net_pads_short_batches_and_returns_unit_vectors() -> None:
+    """The export has a fixed batch; a short call must not silently mis-align."""
+    from vision_memory.appearance import ReidNet
+
+    cfg = load_appearance_config()
+    if cfg.model != "reid":
+        pytest.skip("configured appearance model is not the re-id network")
+    net = ReidNet(cfg.reid_model_path)
+    for count in (1, 3, net._batch + 2 if net._batch else 5):
+        crops = [np.random.randint(0, 255, (64, 32, 3), dtype=np.uint8) for _ in range(count)]
+        out = net.encode_batch(crops)
+        assert out.shape == (count, net.dim)
+        assert np.allclose(np.linalg.norm(out, axis=1), 1.0, atol=1e-4)
+    assert net.encode_batch([]).shape == (0, net.dim)

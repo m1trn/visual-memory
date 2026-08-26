@@ -32,7 +32,7 @@ from vision_memory.config import (  # noqa: E402
     load_tracker_config, load_video_config,
 )
 from vision_memory.detector import YoloOnnxDetector  # noqa: E402
-from vision_memory.appearance import AppearanceDescriber  # noqa: E402
+from vision_memory.appearance import AppearanceDescriber, build_embedder  # noqa: E402
 from vision_memory.encoder import Encoder  # noqa: E402
 from vision_memory.memory import VisualMemory  # noqa: E402
 from vision_memory.reid import (Verifier, balance, build_verifier,
@@ -42,7 +42,7 @@ from vision_memory.tracker import ByteTracker  # noqa: E402
 
 _DEFAULT_VIDEO = Path("data/samples/vtest.avi")
 _DEFAULT_URL = "https://raw.githubusercontent.com/opencv/opencv/4.x/samples/data/vtest.avi"
-_Boxes = list[tuple[int, np.ndarray, str]]
+_Boxes = list[tuple[int, np.ndarray, str, bool]]
 _MIN_EVIDENCE = 2  # observations before a track is worth identifying
 
 
@@ -73,6 +73,16 @@ def _fit_verifier(pairs_path: Path) -> tuple[Verifier, float]:
     return verifier, threshold
 
 
+def _dashed(frame: np.ndarray, x1: int, y1: int, x2: int, y2: int, colour, step: int = 7) -> None:
+    """Rectangle drawn as a dashed outline, for a position that is estimated."""
+    for x in range(x1, x2, step * 2):
+        cv2.line(frame, (x, y1), (min(x + step, x2), y1), colour, 1)
+        cv2.line(frame, (x, y2), (min(x + step, x2), y2), colour, 1)
+    for y in range(y1, y2, step * 2):
+        cv2.line(frame, (x1, y), (x1, min(y + step, y2)), colour, 1)
+        cv2.line(frame, (x2, y), (x2, min(y + step, y2)), colour, 1)
+
+
 def _draw(frame: np.ndarray, boxes: _Boxes, bound: dict[int, Resolution]) -> None:
     """Label every box with its memory identity.
 
@@ -82,15 +92,30 @@ def _draw(frame: np.ndarray, boxes: _Boxes, bound: dict[int, Resolution]) -> Non
     the tracker swapping their ids. Every box here carries the identity, which
     is assigned as soon as the track is confirmed and never changes afterwards.
     """
-    for track_id, box, label in boxes:
+    for track_id, box, label, hidden in boxes:
         res = bound.get(track_id)
         if res is None:
             continue  # not yet identified; drawing a provisional number would lie
         color = _color(res.identity_id)
         x1, y1, x2, y2 = (int(v) for v in box)
-        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-        text = f"#{res.identity_id} {label} " + ("new" if res.is_new else f"seen before ({res.score:.2f})")
+        if hidden:
+            # Somebody is standing in front of them. The track is still held and
+            # its position is predicted, so keep the identity on screen rather
+            # than letting the person blink out of existence; the dashed outline
+            # says the position is an estimate, not a sighting.
+            _dashed(frame, x1, y1, x2, y2, color)
+            text = f"#{res.identity_id} {label} (hidden)"
+        else:
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            text = f"#{res.identity_id} {label} " + ("new" if res.is_new else f"seen before ({res.score:.2f})")
         cv2.putText(frame, text, (x1, max(y1 - 4, 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+
+
+def _appearance() -> tuple:
+    """The configured appearance model, ready to describe boxes."""
+    cfg = load_appearance_config()
+    embedder, upper = build_embedder(cfg)
+    return embedder, cfg, upper
 
 
 def main() -> None:
@@ -107,7 +132,7 @@ def main() -> None:
     video_cfg, tracker_cfg = load_video_config(), load_tracker_config()
     mem_cfg = replace(load_memory_config(), db_path=str(args.db), index_path=str(args.index))
     detector, encoder = YoloOnnxDetector(load_detector_config()), Encoder(load_encoder_config())
-    describer = AppearanceDescriber(encoder, load_appearance_config())
+    describer = AppearanceDescriber(*_appearance())
     tracker = ByteTracker(tracker_cfg)
     verifier, threshold = _fit_verifier(_DEFAULT_CACHE)
     reid_cfg = load_reid_config()
@@ -124,7 +149,7 @@ def main() -> None:
     fresh = video_cfg.detect_every_n_frames
     bound: dict[int, Resolution] = {}
     first_frame: dict[int, int] = {}
-    lost_count = rebound = created = reclaimed = frame_idx = 0
+    lost_count = rebound = created = reclaimed = taken = frame_idx = 0
     with VisualMemory(mem_cfg, describer.dim) as memory:
         reid = ReIdentifier(memory, verifier, threshold=threshold)
         while frame_idx < args.max_frames:
@@ -149,8 +174,12 @@ def main() -> None:
             # binding rested on two observations, and it must be able to reclaim
             # an earlier record once it has more to show for itself.
             # Identities worn by something on screen right now are off limits.
-            in_use = {bound[t.id].identity_id for t in active
-                      if t.id in bound and t.time_since_update <= fresh}
+            # What each visible object holds, and how well it matched when it
+            # claimed it. A stronger claim may take one of these; the loser is
+            # then re-identified rather than left wearing a number twice.
+            held_by_others = {bound[t.id].identity_id: bound[t.id].score for t in active
+                              if t.id in bound and t.time_since_update <= fresh}
+            in_use = set(held_by_others)
 
             for track in active:
                 held = bound.get(track.id)
@@ -171,7 +200,13 @@ def main() -> None:
                 res = reid.resolve(track.label, track.exemplars,
                                    first_frame.get(track.id, frame_idx) / fps,
                                    frame_idx / fps, track.hits, box=track.box,
-                                   unavailable=in_use)
+                                   unavailable=in_use, held_by_others=held_by_others)
+                # If it took an identity from someone, that holder must give it up.
+                displaced = [t for t in active if t.id != track.id and t.id in bound
+                             and bound[t.id].identity_id == res.identity_id]
+                for other in displaced:
+                    del bound[other.id]
+                    taken += 1
                 bound[track.id] = res
                 created += res.is_new
                 rebound += not res.is_new
@@ -183,8 +218,11 @@ def main() -> None:
                 if res is not None and track.time_since_update == 0:
                     reid.note_seen(res.identity_id, frame_idx / fps, track.box)
 
-            # A track coasting on prediction alone gets no box drawn.
-            _draw(frame, [(t.id, t.box.copy(), t.label) for t in active if t.time_since_update <= fresh], bound)
+            # Keep drawing a track for as long as it is held, marking the frames
+            # where its position is predicted rather than measured. Hiding it
+            # made an occluded person vanish, which reads as losing them.
+            _draw(frame, [(t.id, t.box.copy(), t.label, t.time_since_update > fresh)
+                          for t in active], bound)
             writer.write(frame)
 
             for lost in tracker.pop_lost():
@@ -211,6 +249,7 @@ def main() -> None:
     print(f"  tracks identified: {rebound + created}   recognized: {rebound}   new: {created}"
           f"   (of {lost_count} that later ended)")
     print(f"  earlier records reclaimed on reflection: {reclaimed}")
+    print(f"  identities taken back by a stronger match: {taken}")
     print(f"  identities in {mem_cfg.db_path}: {identity_count}\nannotated -> {out_path}")
 
 

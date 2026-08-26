@@ -27,7 +27,7 @@ from vision_memory.config import (  # noqa: E402
     load_reid_config, load_tracker_config, load_video_config,
 )
 from vision_memory.detector import YoloOnnxDetector  # noqa: E402
-from vision_memory.appearance import AppearanceDescriber  # noqa: E402
+from vision_memory.appearance import AppearanceDescriber, build_embedder  # noqa: E402
 from vision_memory.encoder import Encoder  # noqa: E402
 from vision_memory.metrics import auroc  # noqa: E402
 from vision_memory.reid import balance, build_verifier, mine_pairs, split_by_group  # noqa: E402
@@ -49,7 +49,7 @@ def collect_track_embeddings(
     """
     video_cfg = load_video_config()
     detector = YoloOnnxDetector(load_detector_config())
-    describer = AppearanceDescriber(Encoder(load_encoder_config()), load_appearance_config())
+    describer = AppearanceDescriber(*_appearance())
     tracker = ByteTracker(load_tracker_config())
 
     observations: dict[int, list[np.ndarray]] = {}
@@ -96,6 +96,13 @@ def _rates(y_true: np.ndarray, pred: np.ndarray) -> tuple[float, float, float]:
     return (float((pred == truth).mean()) if len(truth) else 0.0,
             tp / (tp + fn) if tp + fn else 0.0,   # TPR: true matches accepted
             tn / (tn + fp) if tn + fp else 0.0)   # TNR: different objects rejected
+
+
+def _appearance() -> tuple:
+    """The configured appearance model, ready to describe boxes."""
+    cfg = load_appearance_config()
+    embedder, upper = build_embedder(cfg)
+    return embedder, cfg, upper
 
 
 def main() -> None:

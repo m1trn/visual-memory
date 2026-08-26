@@ -84,6 +84,7 @@ class ReIdentifier:
         appearances: int,
         box: np.ndarray | None = None,
         unavailable: frozenset[int] | set[int] | None = None,
+        held_by_others: dict[int, float] | None = None,
     ) -> Resolution:
         """Bind these observations into the best matching identity, or create one.
 
@@ -99,6 +100,23 @@ class ReIdentifier:
         best_id, best_score = self._best_candidate(
             label, obs, first_seen, last_seen, unavailable=unavailable
         )
+
+        # An identity worn by someone else is not simply off limits: the current
+        # holder may have been the first to ask rather than the best match. Two
+        # people who resemble one another both score against the same stored
+        # record, and whichever track happened to appear first would otherwise
+        # keep it for good, leaving the real person permanently renamed. A
+        # clearly stronger claim takes it, and the displaced holder is returned
+        # so the caller can re-identify them.
+        contested = self._better_claim(label, obs, first_seen, last_seen,
+                                       held_by_others or {}, best_id, best_score)
+        if contested is not None:
+            taken_id, taken_score = contested
+            identity_id = self.memory.remember(
+                label, list(obs), first_seen, last_seen, appearances, identity_id=taken_id
+            )
+            self._remember_where(identity_id, last_seen, box)
+            return Resolution(identity_id=identity_id, score=taken_score, is_new=False)
 
         required = self.threshold
         if best_id is not None and box is not None:
@@ -170,6 +188,37 @@ class ReIdentifier:
         self._recent.pop(absorb, None)
         self._remember_where(identity_id, last_seen, box)
         return Resolution(identity_id=identity_id, score=best_score, is_new=False)
+
+    def _better_claim(self, label: str, obs: np.ndarray, first_seen: float, last_seen: float,
+                      held_by_others: dict[int, float], best_free: int | None,
+                      best_free_score: float) -> tuple[int, float] | None:
+        """An identity someone else holds, which this object matches clearly better.
+
+        ``held_by_others`` maps an identity to the score its current holder
+        achieved when it claimed it. Taking one requires beating that score by
+        ``claim_margin`` and also beating whatever is freely available, so an
+        identity only changes hands on clear evidence rather than on a tie.
+        """
+        if not held_by_others:
+            return None
+        best: tuple[int, float] | None = None
+        for identity_id, incumbent in held_by_others.items():
+            identity = self.memory.get(identity_id)
+            if identity is None or identity.label != label:
+                continue
+            exemplars = self.memory.exemplar_vectors(identity_id)
+            if len(exemplars) == 0:
+                continue
+            score = self._score_identity(obs, exemplars)
+            if score < self.threshold or score < incumbent + self.cfg.claim_margin:
+                continue
+            if best is None or score > best[1]:
+                best = (identity_id, score)
+        if best is None:
+            return None
+        if best_free is not None and best_free_score >= best[1]:
+            return None
+        return best
 
     def _continuity(self, identity_id: int, now: float, box: np.ndarray) -> float:
         """How strongly position and timing say this is the same object, in [0, 1].

@@ -87,6 +87,9 @@ reid:
   max_false_merge_rate: 0.02 # share of provably-different pairs the binding boundary may accept.
                             # Showing a viewer the wrong name is worse than failing to recognize
                             # someone, so the boundary is set by this rather than by balanced error.
+  claim_margin: 0.08      # how much better a match must be to take an identity from its current
+                          # holder. Two similar-looking people both score against one stored
+                          # record, and without this whichever appeared first keeps it for good.
   merge_margin: 0.05      # extra evidence needed to merge two existing records, beyond what a fresh
                           # binding needs. Merging rewrites history, so it should be the harder call.
   reconsider_every: 15    # frames between revisiting a track's identity as its evidence grows. An
@@ -107,6 +110,10 @@ search:
   default_k: 5
 
 appearance:
+  model: reid             # reid | encoder. A network trained to tell people apart beats a general
+                          # encoder at this job and is far smaller: measured across a 3 s gap, recall
+                          # at 5% false accepts rises 62.1% -> 83.7% and cost falls ~120 -> 11 ms/crop.
+  reid_model_path: data/models/osnet_x0_25_msmt17.onnx
   colour_weight: 0.4      # share of the descriptor taken from clothing colour rather than learned
                           # features. On 30 px pedestrian crops two strangers in dark coats look alike
                           # to the encoder; colour separates them. Measured across a 3 s gap: learned
