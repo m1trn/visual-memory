@@ -11,5 +11,6 @@ scikit-learn
 
 # dev
 pytest
+motmetrics   # MOTA / IDF1 / id-switch metrics, the MOT benchmark's own implementation
 timm
 einops
