@@ -166,8 +166,11 @@ class ReIdentifier:
         required = self.threshold
         if box is not None:
             required -= self.cfg.continuity_bonus * self._continuity(best_id, first_seen, box)
-        # Merging rewrites history, so demand clearly more than a fresh binding.
-        if best_score < required + self.cfg.merge_margin:
+        # Merging rewrites history, so demand clearly more than a fresh
+        # binding — but never more than evidence can supply: cosine tops out at
+        # 1.0, so an uncapped bar above ~0.98 would refuse even a byte-identical
+        # duplicate and silently turn this mechanism off.
+        if best_score < min(required + self.cfg.merge_margin, 0.98):
             return None
         # A merge joins two RECORDS, so the two records must themselves be
         # compatible. Checking only the track against the candidate misses the

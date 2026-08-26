@@ -101,6 +101,25 @@ def _run(sequence: Sequence, max_frames: int | None) -> tuple[dict, dict, int]:
             held_by_others = {bound[t.id].identity_id: bound[t.id].score for t in active
                               if t.id in bound and t.time_since_update <= fresh}
             in_use = set(held_by_others)
+            # A binding made from two observations must be allowed to improve,
+            # or an object called new can never reclaim its earlier record. The
+            # demo has always done this; the evaluation must exercise the same
+            # system it scores.
+            if number % reid_cfg.reconsider_every == 0:
+                for track in active:
+                    held = bound.get(track.id)
+                    if held is None or not track.exemplars:
+                        continue
+                    revised = reid.reconsider(
+                        held.identity_id, track.label, track.exemplars,
+                        first_frame[track.id] / sequence.fps, number / sequence.fps,
+                        track.hits, box=track.box,
+                        unavailable=in_use - {held.identity_id},
+                    )
+                    if revised is not None:
+                        for other, r in list(bound.items()):
+                            if r.identity_id == held.identity_id:
+                                bound[other] = revised
             for track in active:
                 if track.id in bound or len(track.exemplars) < _MIN_EVIDENCE:
                     continue

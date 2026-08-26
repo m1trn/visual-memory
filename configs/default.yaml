@@ -127,8 +127,14 @@ reid:
   claim_margin: 0.08      # how much better a match must be to take an identity from its current
                           # holder. Two similar-looking people both score against one stored
                           # record, and without this whichever appeared first keeps it for good.
-  merge_margin: 0.05      # extra evidence needed to merge two existing records, beyond what a fresh
+  merge_margin: 0.15      # extra evidence needed to merge two existing records, beyond what a fresh
                           # binding needs. Merging rewrites history, so it should be the harder call.
+                          # Set from the labels, not argument: at 0.05 reconsider's merges made
+                          # switches WORSE on both labelled sequences (29 -> 34 and 23 -> 26 with
+                          # IDF1 flat) - the records it joined were ones the annotator separates. At
+                          # 0.15 every harmful merge is refused and the results are identical to not
+                          # reconsidering at all, so the mechanism remains only for blatant
+                          # duplicates that clear a 0.905 score.
   reconsider_every: 15    # frames between revisiting a track's identity as its evidence grows. An
                           # identity assigned from two observations must be allowed to improve, or an
                           # object called new can never reclaim the record of its earlier visit.
