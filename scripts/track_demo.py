@@ -23,7 +23,7 @@ from vision_memory.config import (load_appearance_config, load_detector_config, 
                                   load_encoder_config,
                                   load_tracker_config, load_video_config)
 from vision_memory.detector import YoloOnnxDetector  # noqa: E402
-from vision_memory.appearance import AppearanceDescriber, build_embedder  # noqa: E402
+from vision_memory.appearance import build_describer  # noqa: E402
 from vision_memory.encoder import Encoder  # noqa: E402
 from vision_memory.tracker import ByteTracker  # noqa: E402
 
@@ -39,13 +39,6 @@ def _color(track_id: int) -> tuple[int, int, int]:
     return int(b), int(g), int(r)
 
 
-def _appearance() -> tuple:
-    """The configured appearance model, ready to describe boxes."""
-    cfg = load_appearance_config()
-    embedder, upper = build_embedder(cfg)
-    return embedder, cfg, upper
-
-
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--video", type=Path, default=_DEFAULT_VIDEO)
@@ -57,7 +50,7 @@ def main() -> None:
 
     detector = YoloOnnxDetector(load_detector_config())
     tracker_cfg = load_tracker_config()
-    describer = (AppearanceDescriber(*_appearance())
+    describer = (build_describer(load_appearance_config())
                  if load_video_config().embed_for_association else None)
     tracker = ByteTracker(tracker_cfg)
     video_cfg = load_video_config()
@@ -104,7 +97,7 @@ def main() -> None:
         embeddings = None
         if detections and describer is not None:
             t0 = time.perf_counter()
-            embeddings = describer.describe(frame, [d.box for d in detections])
+            embeddings = describer.describe(frame, [d.box for d in detections], [d.label for d in detections])
             emb_times.append(time.perf_counter() - t0)
 
         t0 = time.perf_counter()

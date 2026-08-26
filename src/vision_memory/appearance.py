@@ -22,6 +22,8 @@ know nothing about this.
 
 from __future__ import annotations
 
+import dataclasses
+
 import cv2
 import numpy as np
 import onnxruntime as ort
@@ -115,6 +117,19 @@ class Embedder(Protocol):
     def encode_batch(self, crops_rgb: Sequence[np.ndarray]) -> np.ndarray: ...
 
 
+def build_describer(cfg: AppearanceConfig) -> RoutedDescriber | AppearanceDescriber:
+    """The appearance pipeline described by the config, ready to describe boxes."""
+    general_embedder, general_upper = build_embedder(dataclasses.replace(cfg, model="encoder"))
+    general = AppearanceDescriber(general_embedder, cfg, general_upper)
+    if cfg.model != "reid":
+        return general
+    specialist_embedder, specialist_upper = build_embedder(cfg)
+    specialist = AppearanceDescriber(
+        specialist_embedder, dataclasses.replace(cfg, colour_weight=0.0), specialist_upper
+    )
+    return RoutedDescriber(specialist, general, frozenset(cfg.specialist_labels))
+
+
 def build_embedder(cfg: AppearanceConfig) -> tuple[Embedder, float]:
     """The configured appearance model, and how much of a box it should see.
 
@@ -177,6 +192,54 @@ class AppearanceDescriber:
             index: fuse(deep, colour_bands(colour, self.cfg.colour_bands), self.cfg.colour_weight)
             for index, deep, colour in zip(kept, vectors, crops_colour)
         }
+
+
+class RoutedDescriber:
+    """Describes each object with whichever model is good at its kind of thing.
+
+    A person re-identification network is trained to separate people and is far
+    better at it than a general encoder, but it collapses everything else: on
+    assorted objects it rates unrelated images at 0.454 where the general
+    encoder gives 0.031, and it retrieves 4 of 6 known pairs against 6 of 6.
+    Measured the other way round, on people, the re-id network reaches 0.869
+    AUROC against the general encoder's 0.683. Neither is the right answer for
+    both, so each object goes to the model that can actually see it.
+
+    The two vectors occupy separate slices of one combined vector, zero
+    elsewhere. Within a kind, cosine is exactly the model's own cosine; across
+    kinds it is zero, which is correct, since a person and a car are never the
+    same object. Everything downstream keeps working on plain dot products.
+    """
+
+    def __init__(self, specialist: AppearanceDescriber, general: AppearanceDescriber,
+                 specialist_labels: frozenset[str]) -> None:
+        self.specialist = specialist
+        self.general = general
+        self.specialist_labels = specialist_labels
+
+    @property
+    def dim(self) -> int:
+        return self.specialist.dim + self.general.dim
+
+    def describe(self, frame_bgr: np.ndarray, boxes: Sequence[np.ndarray],
+                 labels: Sequence[str]) -> dict[int, np.ndarray]:
+        """Describe each box using the model suited to its label."""
+        groups: dict[bool, list[int]] = {True: [], False: []}
+        for index, label in enumerate(labels):
+            groups[label in self.specialist_labels].append(index)
+
+        out: dict[int, np.ndarray] = {}
+        for is_specialist, indices in groups.items():
+            if not indices:
+                continue
+            model = self.specialist if is_specialist else self.general
+            described = model.describe(frame_bgr, [boxes[i] for i in indices])
+            offset = 0 if is_specialist else self.specialist.dim
+            for local, vector in described.items():
+                slot = np.zeros(self.dim, dtype=np.float32)
+                slot[offset : offset + len(vector)] = vector
+                out[indices[local]] = slot
+        return out
 
 
 def _unit(v: np.ndarray) -> np.ndarray:

@@ -88,3 +88,40 @@ def test_reid_net_pads_short_batches_and_returns_unit_vectors() -> None:
         assert out.shape == (count, net.dim)
         assert np.allclose(np.linalg.norm(out, axis=1), 1.0, atol=1e-4)
     assert net.encode_batch([]).shape == (0, net.dim)
+
+
+def test_routing_sends_each_kind_to_its_own_slice() -> None:
+    """A specialist model is only good at its own subject; the rest keep the general one."""
+    from vision_memory.appearance import build_describer
+
+    cfg = load_appearance_config()
+    if cfg.model != "reid":
+        pytest.skip("routing only applies when a specialist model is configured")
+    d = build_describer(cfg)
+    frame = np.random.randint(0, 255, (300, 400, 3), dtype=np.uint8)
+    boxes = [np.array([10.0, 10.0, 60.0, 150.0]), np.array([100.0, 40.0, 160.0, 190.0])]
+    out = d.describe(frame, boxes, ["person", "car"])
+    assert set(out) == {0, 1}
+
+    person, car = out[0], out[1]
+    assert d.dim == d.specialist.dim + d.general.dim
+    for v in (person, car):
+        assert abs(float(np.linalg.norm(v)) - 1.0) < 1e-4
+    # Each occupies its own slice, so the two can never be confused for each other.
+    assert not person[d.specialist.dim:].any()
+    assert not car[: d.specialist.dim].any()
+    assert float(person @ car) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_routing_preserves_within_kind_similarity() -> None:
+    """Slotting must not distort the model's own scores, only place them."""
+    from vision_memory.appearance import build_describer
+
+    cfg = load_appearance_config()
+    if cfg.model != "reid":
+        pytest.skip("routing only applies when a specialist model is configured")
+    d = build_describer(cfg)
+    frame = np.random.randint(0, 255, (300, 400, 3), dtype=np.uint8)
+    box = np.array([10.0, 10.0, 60.0, 150.0])
+    out = d.describe(frame, [box, box], ["person", "person"])
+    assert float(out[0] @ out[1]) == pytest.approx(1.0, abs=1e-4)

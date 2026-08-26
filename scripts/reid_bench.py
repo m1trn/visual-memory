@@ -27,7 +27,7 @@ from vision_memory.config import (  # noqa: E402
     load_reid_config, load_tracker_config, load_video_config,
 )
 from vision_memory.detector import YoloOnnxDetector  # noqa: E402
-from vision_memory.appearance import AppearanceDescriber, build_embedder  # noqa: E402
+from vision_memory.appearance import build_describer  # noqa: E402
 from vision_memory.encoder import Encoder  # noqa: E402
 from vision_memory.metrics import auroc  # noqa: E402
 from vision_memory.reid import balance, build_verifier, mine_pairs, split_by_group  # noqa: E402
@@ -49,7 +49,7 @@ def collect_track_embeddings(
     """
     video_cfg = load_video_config()
     detector = YoloOnnxDetector(load_detector_config())
-    describer = AppearanceDescriber(*_appearance())
+    describer = build_describer(load_appearance_config())
     tracker = ByteTracker(load_tracker_config())
 
     observations: dict[int, list[np.ndarray]] = {}
@@ -63,7 +63,7 @@ def collect_track_embeddings(
         detections = detector.detect(frame) if frame_idx % video_cfg.detect_every_n_frames == 0 else None
         # Describe before associating, and with the same descriptor the rest of
         # the system uses, so what is measured here is what actually ships.
-        described = describer.describe(frame, [d.box for d in detections]) if detections else None
+        described = describer.describe(frame, [d.box for d in detections], [d.label for d in detections]) if detections else None
         active = tracker.update(detections, described)
         # Record a vector against the track that ended up owning that detection.
         for track in active:
@@ -96,13 +96,6 @@ def _rates(y_true: np.ndarray, pred: np.ndarray) -> tuple[float, float, float]:
     return (float((pred == truth).mean()) if len(truth) else 0.0,
             tp / (tp + fn) if tp + fn else 0.0,   # TPR: true matches accepted
             tn / (tn + fp) if tn + fp else 0.0)   # TNR: different objects rejected
-
-
-def _appearance() -> tuple:
-    """The configured appearance model, ready to describe boxes."""
-    cfg = load_appearance_config()
-    embedder, upper = build_embedder(cfg)
-    return embedder, cfg, upper
 
 
 def main() -> None:

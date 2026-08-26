@@ -77,6 +77,7 @@ class ReidConfig:
 class AppearanceConfig:
     model: str
     reid_model_path: str
+    specialist_labels: tuple[str, ...]
     colour_weight: float
     colour_bands: int
     deep_upper_fraction: float
@@ -156,4 +157,6 @@ def load_video_config(path: Path = DEFAULT_CONFIG_PATH) -> VideoConfig:
 
 def load_appearance_config(path: Path = DEFAULT_CONFIG_PATH) -> AppearanceConfig:
     """Load only the `appearance` section as a typed dataclass."""
-    return AppearanceConfig(**load_raw(path)["appearance"])
+    raw = dict(load_raw(path)["appearance"])
+    raw["specialist_labels"] = tuple(raw["specialist_labels"])
+    return AppearanceConfig(**raw)

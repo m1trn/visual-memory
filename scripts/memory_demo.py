@@ -26,7 +26,7 @@ from vision_memory.config import (  # noqa: E402
     load_tracker_config, load_video_config,
 )
 from vision_memory.detector import YoloOnnxDetector  # noqa: E402
-from vision_memory.appearance import AppearanceDescriber, build_embedder  # noqa: E402
+from vision_memory.appearance import build_describer  # noqa: E402
 from vision_memory.encoder import Encoder  # noqa: E402
 from vision_memory.memory import VisualMemory  # noqa: E402
 from vision_memory.tracker import ByteTracker  # noqa: E402
@@ -40,13 +40,6 @@ def _exemplar_counts(db_path: str) -> dict[int, int]:
     with closing(sqlite3.connect(db_path)) as con:
         rows = con.execute("SELECT identity_id, COUNT(*) FROM exemplars GROUP BY identity_id").fetchall()
     return {int(i): int(n) for i, n in rows}
-
-
-def _appearance() -> tuple:
-    """The configured appearance model, ready to describe boxes."""
-    cfg = load_appearance_config()
-    embedder, upper = build_embedder(cfg)
-    return embedder, cfg, upper
 
 
 def main() -> None:
@@ -70,7 +63,7 @@ def main() -> None:
     tracker_cfg = load_tracker_config()
 
     detector = YoloOnnxDetector(load_detector_config())
-    describer = AppearanceDescriber(*_appearance())
+    describer = build_describer(load_appearance_config())
     tracker = ByteTracker(tracker_cfg)
 
     cap = cv2.VideoCapture(str(args.video))
@@ -99,7 +92,7 @@ def main() -> None:
                 # than detection: every Nth detector cycle, batched over the frame.
                 if tracker_cfg.embed_every_n and detect_cycle % tracker_cfg.embed_every_n == 0:
                     t0 = time.perf_counter()
-                    embeddings = describer.describe(frame, [d.box for d in detections])
+                    embeddings = describer.describe(frame, [d.box for d in detections], [d.label for d in detections])
                     embed_time += time.perf_counter() - t0
                     embed_calls += len(embeddings)
                 detect_cycle += 1

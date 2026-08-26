@@ -114,6 +114,9 @@ appearance:
                           # encoder at this job and is far smaller: measured across a 3 s gap, recall
                           # at 5% false accepts rises 62.1% -> 83.7% and cost falls ~120 -> 11 ms/crop.
   reid_model_path: data/models/osnet_x0_25_msmt17.onnx
+  specialist_labels: [person]  # classes the re-id network is trained for. It is much better than
+                               # the general encoder on these and much worse on anything else, so
+                               # everything not listed here keeps using the general encoder.
   colour_weight: 0.4      # share of the descriptor taken from clothing colour rather than learned
                           # features. On 30 px pedestrian crops two strangers in dark coats look alike
                           # to the encoder; colour separates them. Measured across a 3 s gap: learned

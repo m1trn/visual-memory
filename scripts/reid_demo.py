@@ -32,7 +32,7 @@ from vision_memory.config import (  # noqa: E402
     load_tracker_config, load_video_config,
 )
 from vision_memory.detector import YoloOnnxDetector  # noqa: E402
-from vision_memory.appearance import AppearanceDescriber, build_embedder  # noqa: E402
+from vision_memory.appearance import build_describer  # noqa: E402
 from vision_memory.encoder import Encoder  # noqa: E402
 from vision_memory.memory import VisualMemory  # noqa: E402
 from vision_memory.reid import (Verifier, balance, build_verifier,
@@ -111,13 +111,6 @@ def _draw(frame: np.ndarray, boxes: _Boxes, bound: dict[int, Resolution]) -> Non
         cv2.putText(frame, text, (x1, max(y1 - 4, 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
 
-def _appearance() -> tuple:
-    """The configured appearance model, ready to describe boxes."""
-    cfg = load_appearance_config()
-    embedder, upper = build_embedder(cfg)
-    return embedder, cfg, upper
-
-
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--video", type=Path, default=_DEFAULT_VIDEO)
@@ -132,7 +125,7 @@ def main() -> None:
     video_cfg, tracker_cfg = load_video_config(), load_tracker_config()
     mem_cfg = replace(load_memory_config(), db_path=str(args.db), index_path=str(args.index))
     detector, encoder = YoloOnnxDetector(load_detector_config()), Encoder(load_encoder_config())
-    describer = AppearanceDescriber(*_appearance())
+    describer = build_describer(load_appearance_config())
     tracker = ByteTracker(tracker_cfg)
     verifier, threshold = _fit_verifier(_DEFAULT_CACHE)
     reid_cfg = load_reid_config()
@@ -161,7 +154,7 @@ def main() -> None:
             # decide who is who rather than only being recorded afterwards.
             # Without this the tracker arbitrates a crossing on box position
             # alone, which is how one person ends up with another's id.
-            embeddings = describer.describe(frame, [d.box for d in detections]) if detections else None
+            embeddings = describer.describe(frame, [d.box for d in detections], [d.label for d in detections]) if detections else None
             active = tracker.update(detections, embeddings)
             first_frame.update({t.id: frame_idx for t in active if t.id not in first_frame})
 
