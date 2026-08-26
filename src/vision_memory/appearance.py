@@ -28,7 +28,10 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 
-from typing import Protocol, Sequence
+from typing import TYPE_CHECKING, Protocol, Sequence
+
+if TYPE_CHECKING:  # only for the signature; appearance does not depend on detection
+    from vision_memory.detector import Detection
 
 from vision_memory.config import AppearanceConfig
 from vision_memory.encoder import Encoder
@@ -240,6 +243,30 @@ class RoutedDescriber:
                 slot[offset : offset + len(vector)] = vector
                 out[indices[local]] = slot
         return out
+
+
+def describe_detections(
+    describer: "RoutedDescriber | AppearanceDescriber",
+    frame_bgr: np.ndarray,
+    detections: Sequence["Detection"],
+) -> dict[int, np.ndarray]:
+    """Embed every detection in a frame, keyed by its position in ``detections``.
+
+    The one path from boxes to vectors. Seven scripts previously each built
+    their own call, and three times a change was measured in one and left stale
+    in another, so there is deliberately nothing left to keep in sync.
+
+    Every detection is embedded, weak ones included: association is where a
+    low-confidence box earns its keep, since appearance is most needed exactly
+    when a person is half-hidden and geometry is ambiguous. Whether a crop is
+    trustworthy enough to *remember* is a separate question, answered by
+    ``tracker.min_exemplar_confidence``.
+    """
+    if not detections:
+        return {}
+    return describer.describe(
+        frame_bgr, [d.box for d in detections], [d.label for d in detections]
+    )
 
 
 def _unit(v: np.ndarray) -> np.ndarray:

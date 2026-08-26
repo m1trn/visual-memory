@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from reid_demo import _fit_verifier, _DEFAULT_CACHE  # noqa: E402
-from vision_memory.appearance import build_describer  # noqa: E402
+from vision_memory.appearance import build_describer, describe_detections  # noqa: E402
 from vision_memory.config import (  # noqa: E402
     load_appearance_config, load_detector_config, load_memory_config,
     load_reid_config, load_tracker_config, load_video_config,
@@ -87,9 +87,7 @@ def _run(sequence: Sequence, max_frames: int | None) -> tuple[dict, dict, int]:
                 break
             if (number - 1) % video_cfg.detect_every_n_frames == 0:
                 detections = detector.detect(frame)
-                embeddings = describer.describe(
-                    frame, [d.box for d in detections], [d.label for d in detections]
-                ) if detections else None
+                embeddings = describe_detections(describer, frame, detections)
             else:
                 detections, embeddings = None, None
             active = tracker.update(detections, embeddings)

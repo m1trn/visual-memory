@@ -32,7 +32,7 @@ from vision_memory.config import (  # noqa: E402
     load_tracker_config, load_video_config,
 )
 from vision_memory.detector import YoloOnnxDetector  # noqa: E402
-from vision_memory.appearance import build_describer  # noqa: E402
+from vision_memory.appearance import build_describer, describe_detections  # noqa: E402
 from vision_memory.encoder import Encoder  # noqa: E402
 from vision_memory.memory import VisualMemory  # noqa: E402
 from vision_memory.reid import (Verifier, balance, build_verifier,
@@ -154,7 +154,7 @@ def main() -> None:
             # decide who is who rather than only being recorded afterwards.
             # Without this the tracker arbitrates a crossing on box position
             # alone, which is how one person ends up with another's id.
-            embeddings = describer.describe(frame, [d.box for d in detections], [d.label for d in detections]) if detections else None
+            embeddings = describe_detections(describer, frame, detections) if detections else None
             active = tracker.update(detections, embeddings)
             first_frame.update({t.id: frame_idx for t in active if t.id not in first_frame})
 

@@ -26,7 +26,7 @@ from vision_memory.config import (  # noqa: E402
     load_tracker_config, load_video_config,
 )
 from vision_memory.detector import YoloOnnxDetector  # noqa: E402
-from vision_memory.appearance import build_describer  # noqa: E402
+from vision_memory.appearance import build_describer, describe_detections  # noqa: E402
 from vision_memory.encoder import Encoder  # noqa: E402
 from vision_memory.memory import VisualMemory  # noqa: E402
 from vision_memory.tracker import ByteTracker  # noqa: E402
@@ -92,7 +92,7 @@ def main() -> None:
                 # than detection: every Nth detector cycle, batched over the frame.
                 if tracker_cfg.embed_every_n and detect_cycle % tracker_cfg.embed_every_n == 0:
                     t0 = time.perf_counter()
-                    embeddings = describer.describe(frame, [d.box for d in detections], [d.label for d in detections])
+                    embeddings = describe_detections(describer, frame, detections)
                     embed_time += time.perf_counter() - t0
                     embed_calls += len(embeddings)
                 detect_cycle += 1

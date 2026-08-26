@@ -60,6 +60,18 @@ tracker:
                             # which is what made a box look slow to recover after an occlusion. Pushing
                             # it lower still fits velocity to detection jitter and costs track ids.
 
+  min_exemplar_confidence: 0.3  # a detection below this still associates, but never becomes part of
+                                # the record of what somebody looks like. Confidence is also a
+                                # statement about the BOX: measured against MOT17-02's labels a
+                                # detection under 0.3 overlaps its person by 0.247 mean against 0.843
+                                # above 0.7, and that weak band is 56% of all detections, so without
+                                # this a third of a background gets filed as somebody's appearance.
+                                # Telling real returns apart, AUROC/recovered: 0.942/69% at 0.1
+                                # against 0.962/71% at 0.3; held out, 0.976/80% against 0.974/91%.
+                                # Gating ASSOCIATION on it instead was measured and was worse: a weak
+                                # box is most useful exactly when someone is half-hidden and geometry
+                                # cannot arbitrate, which is what ByteTrack's second pass is for.
+
   high_conf: 0.5           # detections >= this go to the first association pass
 
   low_conf: 0.1            # detections in [low_conf, high_conf) go to the second (ByteTrack) pass

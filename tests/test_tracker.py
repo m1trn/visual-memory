@@ -20,6 +20,7 @@ def _cfg(**overrides) -> TrackerConfig:
         contested_iou=0.5,
         max_centre_distance=2.0,
         measurement_noise=1.0,
+        min_exemplar_confidence=0.0,
         veto_views=3,
         claim_margin=0.0,
         appearance_veto=0.0,
@@ -255,3 +256,33 @@ def test_a_coasting_track_never_collapses_to_a_degenerate_box() -> None:
     for track in tracker._tracks:
         assert track.box[2] - track.box[0] > 0
         assert track.box[3] - track.box[1] > 0
+
+
+def test_a_weak_detection_associates_but_is_never_remembered() -> None:
+    """Confidence is also a statement about the box, and a bad box is a bad crop.
+
+    Measured against MOT17-02's labels, a detection under 0.3 confidence
+    overlaps the person it covers by 0.247 mean against 0.843 above 0.7, and
+    that weak band is 56% of all detections. Such a crop must not become part of
+    the record of what somebody looks like. It must still associate, though:
+    appearance is most needed exactly when someone is half-hidden and geometry
+    cannot arbitrate, which is what the low-confidence pass exists for.
+    """
+    cfg = _cfg(min_hits=1, min_exemplar_confidence=0.3, appearance_veto=0.0)
+    tracker = ByteTracker(cfg)
+    good = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+
+    box = [10.0, 10.0, 30.0, 60.0]
+    (track,) = tracker.update([Detection(np.array(box), 0.9, 0, "person")], {0: good})
+    assert len(track.exemplars) == 1
+
+    # A weak detection of the same object: the track follows it...
+    weak_box = [12.0, 10.0, 32.0, 60.0]
+    (track,) = tracker.update([Detection(np.array(weak_box), 0.2, 0, "person")], {0: good})
+    assert track.time_since_update == 0, "a weak detection must still hold the track"
+    assert track.hits == 2
+    # ...but contributes nothing to what the object is remembered as.
+    assert len(track.exemplars) == 1, "a weak box must not become an exemplar"
+
+    (track,) = tracker.update([Detection(np.array(box), 0.8, 0, "person")], {0: good})
+    assert len(track.exemplars) == 2

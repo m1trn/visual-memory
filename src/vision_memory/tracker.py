@@ -456,7 +456,7 @@ class ByteTracker:
         track.time_since_update = 0
         if track.state == "tentative" and track.hits >= self.cfg.min_hits:
             track.state = "active"
-        if emb is not None:
+        if emb is not None and det.score >= self.cfg.min_exemplar_confidence:
             self.add_embedding(track, emb)
 
     def _spawn(self, det: Detection, emb: np.ndarray | None) -> None:
@@ -473,7 +473,7 @@ class ByteTracker:
             state="tentative",
             _kf=kf,
         )
-        if emb is not None:
+        if emb is not None and det.score >= self.cfg.min_exemplar_confidence:
             self.add_embedding(track, emb)
         if self.cfg.min_hits <= 1:
             track.state = "active"
