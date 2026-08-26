@@ -96,9 +96,18 @@ reid:
   verifier: cosine        # cosine | logistic
   min_pair_gap: 2         # observations apart, so a positive pair is not two near-identical frames
   max_pairs_per_track: 200 # cap per track, or one long-lived object dominates the positive class
-  max_false_merge_rate: 0.02 # share of provably-different pairs the binding boundary may accept.
+  max_false_merge_rate: 0.01 # share of provably-different pairs the binding boundary may accept.
                             # Showing a viewer the wrong name is worse than failing to recognize
                             # someone, so the boundary is set by this rather than by balanced error.
+                            # 0.02 was argued for, never measured; scored against MOT17-02's labelled
+                            # identities it puts the boundary at 0.704, which is below the useful band.
+                            # Sweeping the boundary end to end: no re-id at all gives IDF1 45.3% with
+                            # 30 identity switches, and 0.704 gives 45.9% with 32 - barely above doing
+                            # nothing, and swapping MORE numbers. 0.720-0.775 is a flat optimum at
+                            # 46.1-46.5% with 29 switches. Below 0.70 re-id is actively destructive:
+                            # 0.55 collapses to 36.9% with 53 switches, far worse than not binding at
+                            # all, because a wrong merge costs more identity than a correct recovery
+                            # gains. This rate lands the calibration at 0.723, inside that band.
   claim_margin: 0.08      # how much better a match must be to take an identity from its current
                           # holder. Two similar-looking people both score against one stored
                           # record, and without this whichever appeared first keeps it for good.
