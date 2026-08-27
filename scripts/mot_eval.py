@@ -80,7 +80,8 @@ def _run(sequence: Sequence, max_frames: int | None) -> tuple[dict, dict, int]:
 
     with VisualMemory(mem_cfg, describer.dim) as memory:
         reid = ReIdentifier(memory, verifier, threshold=threshold)
-        binder = IdentityBinder(reid, sequence.fps, fresh, reid_cfg.reconsider_every, _MIN_EVIDENCE)
+        binder = IdentityBinder(reid, sequence.fps, fresh, reid_cfg.reconsider_every, _MIN_EVIDENCE,
+                                swap_margin=reid_cfg.swap_margin)
         for number, frame in sequence.frames():
             if max_frames is not None and number > max_frames:
                 break

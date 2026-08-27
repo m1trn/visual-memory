@@ -66,6 +66,7 @@ class ReidConfig:
     observation_quantile: float
     max_false_merge_rate: float
     claim_margin: float
+    swap_margin: float
     merge_margin: float
     reconsider_every: int
     continuity_bonus: float

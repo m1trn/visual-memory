@@ -100,8 +100,9 @@ def run(frames: list, sequence: Sequence, threshold: float | None, dim: int):
 
     with VisualMemory(mem_cfg, dim) as memory:
         reid = ReIdentifier(memory, _Fixed(threshold or 1.0), threshold=threshold or 1.0)
-        binder = IdentityBinder(reid, sequence.fps, fresh,
-                                load_reid_config().reconsider_every, _MIN_EVIDENCE)
+        rc = load_reid_config()
+        binder = IdentityBinder(reid, sequence.fps, fresh, rc.reconsider_every, _MIN_EVIDENCE,
+                                swap_margin=rc.swap_margin)
         for number, detections, embeddings in frames:
             active = tracker.update(detections, embeddings)
             if threshold is not None:

@@ -385,3 +385,48 @@ def test_a_dead_track_releases_its_identity_so_the_person_can_return(tmp_path) -
 
         binder.forget(1)
         assert binder.identity_of(1) is None
+
+
+def test_two_people_holding_each_others_numbers_swap_back_only_when_mutual(tmp_path) -> None:
+    """Takeover never runs for already-bound tracks, so this is the only repair.
+
+    Two live tracks wear each other's identities. Both fit the other's record
+    better than their own, so they swap. A one-sided case must not swap: one
+    confused frame on one side cannot be allowed to flip two people.
+    """
+    from vision_memory.reidentifier import IdentityBinder, Resolution
+    from vision_memory.tracker import Track
+
+    e = np.eye(DIM, dtype=np.float32)
+
+    def track(tid: int, views) -> Track:
+        views = [np.asarray(v, dtype=np.float32) for v in views]
+        return Track(id=tid, box=np.array([0.0, 0.0, 10.0, 20.0], dtype=np.float32),
+                     score=0.9, class_id=0, label="person", hits=len(views),
+                     time_since_update=0, state="active", exemplars=views)
+
+    with VisualMemory(cfg(tmp_path), DIM) as mem:
+        rid = ReIdentifier(mem, FakeVerifier(0.5))
+        alice = mem.remember("person", cluster(e[1], 4, seed=41), 0.0, 1.0, 4)
+        bob = mem.remember("person", cluster(e[5], 4, seed=42), 0.0, 1.0, 4)
+        binder = IdentityBinder(rid, fps=10.0, fresh=3, reconsider_every=1, swap_margin=0.1)
+
+        # A crossing left them wearing each other's numbers.
+        a = track(1, cluster(e[1], 3, seed=43))   # looks like alice
+        b = track(2, cluster(e[5], 3, seed=44))   # looks like bob
+        binder.bound[1] = Resolution(identity_id=bob, score=0.6, is_new=False)
+        binder.bound[2] = Resolution(identity_id=alice, score=0.6, is_new=False)
+        binder.first_frame.update({1: 0, 2: 0})
+
+        events = binder.step([a, b], frame_idx=1)
+        assert events.swapped == 1
+        assert binder.identity_of(1) == alice and binder.identity_of(2) == bob
+
+        # One-sided: track 2 now looks like NEITHER, so no swap however well
+        # track 1 fits the other record.
+        binder.bound[1] = Resolution(identity_id=bob, score=0.6, is_new=False)
+        binder.bound[2] = Resolution(identity_id=alice, score=0.6, is_new=False)
+        neither = track(2, cluster(e[7], 3, seed=45))
+        events = binder.step([a, neither], frame_idx=2)
+        assert events.swapped == 0
+        assert binder.identity_of(1) == bob and binder.identity_of(2) == alice

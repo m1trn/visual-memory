@@ -229,6 +229,13 @@ class ReIdentifier:
             return None
         return best
 
+    def score_against(self, identity_id: int, embeddings: Sequence[np.ndarray]) -> float | None:
+        """How well these observations fit one stored identity, or None if it has no exemplars."""
+        exemplars = self.memory.exemplar_vectors(identity_id)
+        if len(exemplars) == 0:
+            return None
+        return self._score_identity(_stack_unit(embeddings, self.memory.dim), exemplars)
+
     def _continuity(self, identity_id: int, now: float, box: np.ndarray) -> float:
         """How strongly position and timing say this is the same object, in [0, 1].
 
@@ -380,6 +387,7 @@ class BindingEvents:
     rebound: int = 0
     reclaimed: int = 0
     taken: int = 0
+    swapped: int = 0
 
 
 class IdentityBinder:
@@ -406,12 +414,14 @@ class IdentityBinder:
     """
 
     def __init__(self, reid: ReIdentifier, fps: float, fresh: int,
-                 reconsider_every: int, min_evidence: int = 2) -> None:
+                 reconsider_every: int, min_evidence: int = 2,
+                 swap_margin: float = 0.0) -> None:
         self.reid = reid
         self.fps = fps
         self.fresh = fresh
         self.reconsider_every = reconsider_every
         self.min_evidence = min_evidence
+        self.swap_margin = swap_margin
         self.bound: dict[int, Resolution] = {}
         self.first_frame: dict[int, int] = {}
 
@@ -433,7 +443,7 @@ class IdentityBinder:
         if frame_idx % self.reconsider_every == 0:
             for track in active:
                 held = self.bound.get(track.id)
-                if held is None or not track.exemplars:
+                if held is None or not len(track.exemplars):
                     continue
                 revised = self.reid.reconsider(
                     held.identity_id, track.label, track.exemplars,
@@ -445,6 +455,7 @@ class IdentityBinder:
                         if res.identity_id == held.identity_id:
                             self.bound[other] = revised
                     events.reclaimed += 1
+            events.swapped += self._swap_crossed_numbers(active)
 
         # Identities bound earlier in THIS frame, at the score they were won
         # with. Rebuilt from live bindings only: a dead track's entry must not
@@ -475,6 +486,48 @@ class IdentityBinder:
             if res is not None and track.time_since_update == 0:
                 self.reid.note_seen(res.identity_id, frame_idx / fps, track.box)
         return events
+
+    def _swap_crossed_numbers(self, active: Sequence) -> int:
+        """Give two live tracks each other's numbers back when both fit better.
+
+        Takeover runs only when a track is first identified and the second
+        look skips numbers in use, so two people who exchanged numbers during
+        a crossing kept the wrong ones for as long as both stayed on screen.
+        The condition is mutual: A must fit B's record better than its own AND
+        B must fit A's better than its own, each by ``swap_margin``, and each
+        must clear the binding threshold on the other's record. One confused
+        frame on one side cannot flip two people.
+        """
+        if self.swap_margin <= 0.0:
+            return 0
+        live = [t for t in active if t.id in self.bound and len(t.exemplars)
+                and t.time_since_update <= self.fresh]
+        own: dict[int, float | None] = {
+            t.id: self.reid.score_against(self.bound[t.id].identity_id, t.exemplars) for t in live
+        }
+        swaps = 0
+        done: set[int] = set()
+        for i, a in enumerate(live):
+            if a.id in done or own[a.id] is None:
+                continue
+            for b in live[i + 1:]:
+                if b.id in done or own[b.id] is None or a.label != b.label:
+                    continue
+                ida, idb = self.bound[a.id].identity_id, self.bound[b.id].identity_id
+                a_on_b = self.reid.score_against(idb, a.exemplars)
+                b_on_a = self.reid.score_against(ida, b.exemplars)
+                if a_on_b is None or b_on_a is None:
+                    continue
+                bar = self.reid.threshold
+                if (a_on_b >= bar and b_on_a >= bar
+                        and a_on_b >= own[a.id] + self.swap_margin
+                        and b_on_a >= own[b.id] + self.swap_margin):
+                    self.bound[a.id] = Resolution(identity_id=idb, score=a_on_b, is_new=False)
+                    self.bound[b.id] = Resolution(identity_id=ida, score=b_on_a, is_new=False)
+                    done.update((a.id, b.id))
+                    swaps += 1
+                    break
+        return swaps
 
     def forget(self, track_id: int) -> tuple[Resolution | None, int | None]:
         """Release a dead track's binding and return what it held.

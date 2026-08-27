@@ -124,6 +124,14 @@ reid:
                             # it once landed at 0.704. Re-swept at that quantile, 0.723-0.773 is flat
                             # at 47.0-47.3% IDF1 with 29 switches and 0.800 collapses back to the
                             # floor, so the boundary is placed mid-band rather than at the peak.
+  swap_margin: 0.08       # two people on screen who have each other's numbers swap them back when
+                          # EACH fits the other's record better than their own by this much. Takeover
+                          # only runs when a track is first identified, so without this a swap made
+                          # during a crossing was permanent until one of them left. The condition is
+                          # mutual on purpose: one confused frame cannot flip two people. 0 disables.
+                          # Measured: fires 0 times on both labelled sequences and on the demo clip -
+                          # results are bit-identical with it off. Kept because the gap it closes is
+                          # real and the condition makes it safe, but it has not yet earned a number.
   claim_margin: 0.08      # how much better a match must be to take an identity from its current
                           # holder. Two similar-looking people both score against one stored
                           # record, and without this whichever appeared first keeps it for good.

@@ -140,13 +140,14 @@ def main() -> None:
     part_path = out_path.with_suffix(".part.mp4")
     writer = cv2.VideoWriter(str(part_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
     fresh = video_cfg.detect_every_n_frames
-    lost_count = rebound = created = reclaimed = taken = frame_idx = 0
+    lost_count = rebound = created = reclaimed = taken = swapped = frame_idx = 0
     with VisualMemory(mem_cfg, describer.dim) as memory:
         reid = ReIdentifier(memory, verifier, threshold=threshold)
         # The binding rules - who may wear which number, when a stronger claim
         # takes one, when a track revisits its own - live in IdentityBinder, so
         # the demo, the labelled evaluation and the sweep run the same system.
-        binder = IdentityBinder(reid, fps, fresh, reid_cfg.reconsider_every, _MIN_EVIDENCE)
+        binder = IdentityBinder(reid, fps, fresh, reid_cfg.reconsider_every, _MIN_EVIDENCE,
+                                swap_margin=reid_cfg.swap_margin)
         while frame_idx < args.max_frames:
             ok, frame = cap.read()
             if not ok:
@@ -163,6 +164,7 @@ def main() -> None:
             rebound += events.rebound
             reclaimed += events.reclaimed
             taken += events.taken
+            swapped += events.swapped
 
             # Keep drawing a track for as long as it is held, marking the frames
             # where its position is predicted rather than measured. Hiding it
@@ -198,6 +200,7 @@ def main() -> None:
           f"   (of {lost_count} that later ended)")
     print(f"  earlier records reclaimed on reflection: {reclaimed}")
     print(f"  identities taken back by a stronger match: {taken}")
+    print(f"  crossed numbers swapped back between two people on screen: {swapped}")
     print(f"  identities in {mem_cfg.db_path}: {identity_count}\nannotated -> {out_path}")
 
 
