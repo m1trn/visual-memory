@@ -488,7 +488,8 @@ class IdentityBinder:
                     continue
                 revised = self.reid.reconsider(
                     held.identity_id, track.label, track.exemplars,
-                    self.first_frame[track.id] / fps, frame_idx / fps, track.hits,
+                    self.first_frame[track.id] / fps, frame_idx / fps,
+                    track.hits - self.folded_hits.get(track.id, 0),
                     box=track.box, unavailable=in_use - {held.identity_id},
                     origin_box=track.first_box,
                 )
@@ -498,6 +499,15 @@ class IdentityBinder:
                             self.bound[other] = revised
                     self.folded_hits[track.id] = track.hits
                     events.reclaimed += 1
+                    # A merge hands this track the surviving number, and that is
+                    # a takeover like any other: a coasting track still wearing
+                    # it (its number was offered precisely because it was not
+                    # fresh) must give it up, or two live tracks share one
+                    # identity the moment it is re-detected.
+                    for other in active:
+                        if other.id != track.id and self.identity_of(other.id) == revised.identity_id:
+                            self._displace(other, frame_idx)
+                            events.taken += 1
             events.swapped += self._swap_crossed_numbers(active)
 
         # Rebuilt AFTER the merges and swaps above: an identity a live track
@@ -537,18 +547,8 @@ class IdentityBinder:
                 continue
             for other in active:
                 if other.id != track.id and self.identity_of(other.id) == res.identity_id:
-                    del self.bound[other.id]
+                    self._displace(other, frame_idx)
                     events.taken += 1
-                    # Whatever this track was, it is not that any more. Its old
-                    # lifetime would make it co-alive with the identity it may
-                    # actually belong to now - a track that slid from one body
-                    # to another spans both - so from here it is a new object.
-                    self.first_frame[other.id] = frame_idx
-                    # The loser is a ghost unless it was seen convincingly this
-                    # very frame: a coasting box, or one held alive by a weak
-                    # second-pass detection, is the same object's stale copy.
-                    if other.time_since_update > 0 or other.score < self.convincing_confidence:
-                        self._dormant.add(other.id)
             self.bound[track.id] = res
             self.folded_hits[track.id] = track.hits
             own = self._current_fit(res.identity_id, track)
@@ -606,18 +606,36 @@ class IdentityBinder:
                     break
         return swaps
 
+    def _displace(self, track, frame_idx: int) -> None:
+        """Take a track's number away and treat it as a new object from here.
+
+        Its old lifetime would make it co-alive with the identity it may
+        actually belong to now - a track that slid from one body to another
+        spans both - so its origin resets in BOTH time and place: where it is
+        now, at this frame. Resetting only the time left the continuity prior
+        asking about a spot the track left long ago.
+
+        The loser is a ghost unless it was seen convincingly this very frame:
+        a coasting box, or one held alive by a weak second-pass detection, is
+        the same object's stale copy and gets no number until really seen.
+        """
+        self.bound.pop(track.id, None)
+        self.folded_hits.pop(track.id, None)
+        self.first_frame[track.id] = frame_idx
+        track.first_box = np.asarray(track.box, dtype=np.float32).copy()
+        if track.time_since_update > 0 or track.score < self.convincing_confidence:
+            self._dormant.add(track.id)
+
     def _current_fit(self, identity_id: int, track) -> float | None:
         """How well the track's latest views fit a record.
 
         Reads ``track.recent`` - the last observations in order. The exemplar
         buffer is deliberately not chronological: it evicts whichever survivor
         most resembles a newcomer, so its tail is a diverse sample of the whole
-        track, not its present. Falls back to the buffer only for a track that
-        has no recent list at all (older callers).
+        track, not its present. There is no fallback to the buffer: the tracker
+        fills both together, so an empty ``recent`` means no views at all.
         """
-        views = list(getattr(track, "recent", []) or [])[-self.recent_views:]
-        if not views and len(track.exemplars):
-            views = list(track.exemplars[-self.recent_views:])
+        views = list(track.recent)[-self.recent_views:] if self.recent_views > 0 else list(track.recent)
         return self.reid.score_against(identity_id, views) if views else None
 
     def forget(self, track_id: int) -> tuple[Resolution | None, int | None, int]:

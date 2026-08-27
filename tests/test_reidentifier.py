@@ -365,7 +365,8 @@ def test_a_dead_track_releases_its_identity_so_the_person_can_return(tmp_path) -
     def track(tid: int, views: list[np.ndarray], tsu: int = 0) -> Track:
         return Track(id=tid, box=np.array([0.0, 0.0, 10.0, 20.0], dtype=np.float32),
                      score=0.9, class_id=0, label="person", hits=len(views),
-                     time_since_update=tsu, state="active", exemplars=views)
+                     time_since_update=tsu, state="active", exemplars=views,
+                     recent=list(views[-3:]))
 
     with VisualMemory(cfg(tmp_path), DIM) as mem:
         rid = ReIdentifier(mem, FakeVerifier(0.8))
@@ -403,7 +404,8 @@ def test_two_people_holding_each_others_numbers_swap_back_only_when_mutual(tmp_p
         views = [np.asarray(v, dtype=np.float32) for v in views]
         return Track(id=tid, box=np.array([0.0, 0.0, 10.0, 20.0], dtype=np.float32),
                      score=0.9, class_id=0, label="person", hits=len(views),
-                     time_since_update=0, state="active", exemplars=views)
+                     time_since_update=0, state="active", exemplars=views,
+                     recent=list(views[-3:]))
 
     with VisualMemory(cfg(tmp_path), DIM) as mem:
         rid = ReIdentifier(mem, FakeVerifier(0.5))
@@ -432,12 +434,15 @@ def test_two_people_holding_each_others_numbers_swap_back_only_when_mutual(tmp_p
         assert binder.identity_of(1) == bob and binder.identity_of(2) == alice
 
 
-def _live_track(tid, views, tsu=0, peak=0.9):
+def _live_track(tid, views, tsu=0, peak=0.9, box=(0.0, 0.0, 10.0, 20.0)):
     from vision_memory.tracker import Track
     views = [np.asarray(v, dtype=np.float32) for v in views]
-    return Track(id=tid, box=np.array([0.0, 0.0, 10.0, 20.0], dtype=np.float32),
-                 score=peak, class_id=0, label="person", hits=len(views),
-                 time_since_update=tsu, state="active", exemplars=views, peak_score=peak)
+    box = np.array(box, dtype=np.float32)
+    # The tracker fills `recent` and `exemplars` together; fixtures must too,
+    # or the binder's present-tense fit is never actually exercised.
+    return Track(id=tid, box=box, first_box=box.copy(), score=peak, class_id=0, label="person",
+                 hits=len(views), time_since_update=tsu, state="active", exemplars=views,
+                 recent=list(views[-3:]), peak_score=peak)
 
 
 def test_a_ghost_whose_identity_was_taken_gets_no_new_number(tmp_path) -> None:
@@ -625,3 +630,71 @@ def test_an_identity_gained_by_a_merge_this_frame_is_unavailable_to_newcomers(tm
         events = binder.step([holder, newcomer], 30)
         assert events.reclaimed == 1 and binder.identity_of(1) == old
         assert binder.identity_of(2) != old, "the merged-into identity must be guarded this frame"
+
+
+def test_a_merge_displaces_a_coasting_holder_of_the_surviving_number(tmp_path) -> None:
+    """Round-2 audit: reconsider merged into an identity a ghost still wore."""
+    from vision_memory.reidentifier import IdentityBinder
+    e = np.eye(DIM, dtype=np.float32)
+    with VisualMemory(cfg(tmp_path), DIM) as mem:
+        rid = ReIdentifier(mem, FakeVerifier(0.8))
+        binder = IdentityBinder(rid, fps=10.0, fresh=3, reconsider_every=10,
+                                convincing_confidence=0.5)
+        z_holder = _live_track(2, [e[3].copy() for _ in range(3)])
+        binder.step([z_holder], 1)
+        z = binder.identity_of(2)
+        # The holder goes unseen (coasting beyond `fresh`), so Z is offered around.
+        ghost = _live_track(2, [e[3].copy() for _ in range(3)], tsu=7)
+        # A newcomer whose first views look different creates W...
+        weak = [(np.sqrt(0.5) * e[3] + np.sqrt(0.5) * e[6]).astype(np.float32)] * 2
+        newcomer = _live_track(3, weak, box=(400, 400, 410, 420))   # far from the ghost: no continuity bonus
+        binder.step([ghost, newcomer], 8)
+        w = binder.identity_of(3)
+        assert w not in (None, z)
+        # ...and by the reconsider tick plainly matches Z: W merges into Z.
+        newcomer = _live_track(3, [e[3].copy() for _ in range(4)], box=(400, 400, 410, 420))
+        events = binder.step([ghost, newcomer], 10)
+        assert events.reclaimed == 1 and binder.identity_of(3) == z
+        # The ghost must have lost Z and be dormant, not share it.
+        assert binder.identity_of(2) is None and events.taken == 1
+        seen = _live_track(2, [e[3].copy() for _ in range(3)], tsu=0, peak=0.2)  # weak second-pass box
+        newcomer = _live_track(3, [e[3].copy() for _ in range(4)], box=(400, 400, 410, 420))
+        binder.step([seen, newcomer], 11)
+        assert binder.identity_of(2) is None, "two live tracks must never wear one number"
+
+
+def test_a_displaced_track_resets_its_origin_in_place_as_well_as_time(tmp_path) -> None:
+    """Round-2 audit: first_frame reset without first_box put continuity at the wrong spot."""
+    from vision_memory.reidentifier import IdentityBinder
+    e = np.eye(DIM, dtype=np.float32)
+    with VisualMemory(cfg(tmp_path), DIM) as mem:
+        rid = ReIdentifier(mem, FakeVerifier(0.6))
+        binder = IdentityBinder(rid, fps=10.0, fresh=3, reconsider_every=1000, recent_views=3)
+        holder = _live_track(1, cluster(e[1], 3, seed=101), box=(0, 0, 10, 20))
+        binder.step([holder], 0)
+        # It has walked far away, then a rightful claimant takes its number.
+        holder = _live_track(1, cluster(e[7], 3, seed=102), box=(500, 500, 510, 520))
+        holder.first_box = np.array([0, 0, 10, 20], dtype=np.float32)
+        rightful = _live_track(2, cluster(e[1], 3, seed=103))
+        events = binder.step([holder, rightful], 50)
+        assert events.taken == 1
+        assert np.allclose(holder.first_box, [500, 500, 510, 520]), "origin must be where it is NOW"
+        assert binder.first_frame[1] == 50
+
+
+def test_reconsider_folds_only_the_hits_memory_has_not_been_told_about(tmp_path) -> None:
+    """Round-2 audit: a reclaim passed the full hit count, double-counting the bind-time fold."""
+    from vision_memory.reidentifier import IdentityBinder
+    e = np.eye(DIM, dtype=np.float32)
+    with VisualMemory(cfg(tmp_path), DIM) as mem:
+        rid = ReIdentifier(mem, FakeVerifier(0.9))
+        binder = IdentityBinder(rid, fps=10.0, fresh=3, reconsider_every=1, recent_views=3)
+        old = mem.remember("person", [e[3].copy() for _ in range(4)], 0.0, 1.0, 4)
+        weak = [(np.sqrt(0.5) * e[3] + np.sqrt(0.5) * e[4]).astype(np.float32)] * 2
+        holder = _live_track(1, weak)          # hits = 2, folded at bind
+        binder.step([holder], 20)
+        holder = _live_track(1, [e[3].copy() for _ in range(6)])   # hits = 6
+        binder.step([holder], 30)
+        assert binder.identity_of(1) == old
+        # old had 4; the provisional carried 2; the reclaim adds the 4 NEW hits only.
+        assert mem.get(old).appearances == 4 + 2 + 4

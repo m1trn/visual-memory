@@ -228,14 +228,17 @@ def calibrate_identity_threshold(
                 continue
             (a0, a1), (b0, b1) = span[t], span[other]
             if a0 <= b1 and b0 <= a1:  # co-alive, so provably a different object
-                s = scorer(query, stored[other], quantile)
                 # Two objects of different kinds live in disjoint slices of
-                # the routed vector and score exactly 0. Re-identification
-                # label-gates its shortlist, so such a pair can never reach
-                # the boundary; counting it as an easy negative dilutes the
-                # false-merge budget with cases that cannot occur.
-                if s != 0.0:
-                    neg.append(s)
+                # the routed vector, so their raw cosine is exactly 0 whatever
+                # verifier is in use. Re-identification label-gates its
+                # shortlist, so such a pair can never reach the boundary;
+                # counting it as an easy negative dilutes the false-merge
+                # budget with cases that cannot occur. Tested on the cosine,
+                # not the scorer: a logistic verifier maps 0 to some
+                # probability and the test would silently stop working.
+                if identity_score(query, stored[other], quantile) == 0.0:
+                    continue
+                neg.append(scorer(query, stored[other], quantile))
     if not pos or not neg:
         raise ValueError("calibration needs both same-object and different-object examples")
 

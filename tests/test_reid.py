@@ -190,3 +190,31 @@ def test_config_section_loads() -> None:
     assert c.verifier in {"cosine", "logistic"}
     assert c.min_pair_gap >= 1
     assert 0.0 <= c.test_fraction < 1.0
+
+
+def test_cross_class_negatives_are_dropped_whatever_the_scorer() -> None:
+    """Round-2 audit: the s != 0 filter only worked on the cosine scale."""
+    from vision_memory.reid import calibrate_identity_threshold
+    rng = np.random.default_rng(0)
+    d = 8
+
+    def unit(v):
+        v = np.asarray(v, np.float32); return v / np.linalg.norm(v)
+    # Two 'people' in the first slice, one 'car' in the disjoint second slice, all co-alive.
+    a = [unit(rng.normal(size=d) * [1, 1, 1, 1, 0, 0, 0, 0]) for _ in range(6)]
+    b = [unit(rng.normal(size=d) * [1, 1, 1, 1, 0, 0, 0, 0]) for _ in range(6)]
+    c = [unit(rng.normal(size=d) * [0, 0, 0, 0, 1, 1, 1, 1]) for _ in range(6)]
+    tracks = {1: a, 2: b, 3: c}
+    frames = {1: list(range(6)), 2: list(range(6)), 3: list(range(6))}
+
+    seen = []
+    def logistic_like(q, e, quant):
+        # Maps cosine 0 to 0.5: a scorer on another scale.
+        from vision_memory.reid import identity_score
+        s = 0.5 + 0.5 * identity_score(q, e, quant)
+        seen.append(s); return s
+
+    calibrate_identity_threshold(tracks, frames, 0.9, 5, 0.0, score=logistic_like)
+    # Person-vs-car pairs (raw cosine exactly 0 -> 0.5 here) must never have been scored as negatives.
+    negatives = [s for s in seen]
+    assert all(abs(s - 0.5) > 1e-6 for s in negatives), negatives
