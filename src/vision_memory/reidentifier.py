@@ -505,7 +505,18 @@ class IdentityBinder:
                     # fresh) must give it up, or two live tracks share one
                     # identity the moment it is re-detected.
                     for other in active:
-                        if other.id != track.id and self.identity_of(other.id) == revised.identity_id:
+                        if other.id == track.id:
+                            continue
+                        worn = self.identity_of(other.id)
+                        if worn is None:
+                            continue
+                        # Either the survivor - now this track's number - or the
+                        # absorbed record, which memory.merge has just deleted.
+                        # The binder is not told which id was absorbed, but a
+                        # binding to an identity that no longer exists can only
+                        # be that, and a track wearing a deleted number would
+                        # otherwise show it on screen and crash the death fold.
+                        if worn == revised.identity_id or self.reid.memory.get(worn) is None:
                             self._displace(other, frame_idx)
                             events.taken += 1
             events.swapped += self._swap_crossed_numbers(active)
@@ -534,7 +545,7 @@ class IdentityBinder:
                 self._dormant.discard(track.id)
             res = self.reid.resolve(
                 track.label, track.exemplars, self.first_frame[track.id] / fps,
-                frame_idx / fps, track.hits, box=track.box,
+                frame_idx / fps, track.hits - self.folded_hits.get(track.id, 0), box=track.box,
                 unavailable=in_use | set(taken_now),
                 held_by_others={**held_by_others, **taken_now},
                 origin_box=track.first_box,
@@ -613,14 +624,17 @@ class IdentityBinder:
         actually belong to now - a track that slid from one body to another
         spans both - so its origin resets in BOTH time and place: where it is
         now, at this frame. Resetting only the time left the continuity prior
-        asking about a spot the track left long ago.
+        asking about a spot the track left long ago. Its fold ledger is NOT
+        reset: the hits already told to memory stay told.
 
         The loser is a ghost unless it was seen convincingly this very frame:
         a coasting box, or one held alive by a weak second-pass detection, is
         the same object's stale copy and gets no number until really seen.
         """
         self.bound.pop(track.id, None)
-        self.folded_hits.pop(track.id, None)
+        # folded_hits is kept: those hits WERE told to memory, under whatever
+        # record this track wore then; a later identity must not be credited
+        # with them again.
         self.first_frame[track.id] = frame_idx
         track.first_box = np.asarray(track.box, dtype=np.float32).copy()
         if track.time_since_update > 0 or track.score < self.convincing_confidence:

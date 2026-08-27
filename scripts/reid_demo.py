@@ -187,7 +187,7 @@ def main() -> None:
                 res, born, folded = binder.forget(lost.id)
                 first = (frame_idx if born is None else born) / fps
                 last = (frame_idx - lost.time_since_update) / fps
-                if res is not None and lost.exemplars:
+                if res is not None and lost.exemplars and memory.get(res.identity_id) is not None:
                     # Fold everything the track ended up seeing into the identity
                     # it was already given, so memory keeps the better record
                     # without the number on screen ever changing.
