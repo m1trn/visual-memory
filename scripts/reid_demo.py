@@ -147,7 +147,9 @@ def main() -> None:
         # takes one, when a track revisits its own - live in IdentityBinder, so
         # the demo, the labelled evaluation and the sweep run the same system.
         binder = IdentityBinder(reid, fps, fresh, reid_cfg.reconsider_every, _MIN_EVIDENCE,
-                                swap_margin=reid_cfg.swap_margin)
+                                swap_margin=reid_cfg.swap_margin,
+                                min_new_identity_confidence=reid_cfg.min_new_identity_confidence,
+                                convincing_confidence=tracker_cfg.high_conf)
         while frame_idx < args.max_frames:
             ok, frame = cap.read()
             if not ok:

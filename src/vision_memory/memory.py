@@ -240,6 +240,23 @@ class VisualMemory:
             self._index.add(combined[keep], new_ids)
         return keep_id
 
+    def forget(self, identity_id: int) -> bool:
+        """Delete an identity and its exemplars outright. Returns False if absent.
+
+        For a record that should never have existed - a track that was granted
+        a new identity and then found not to deserve one. Unlike ``merge`` there
+        is nothing to fold it into; the vectors leave the index so they cannot
+        occupy a shortlist slot, and the row leaves the database.
+        """
+        if self.get(identity_id) is None:
+            return False
+        ids = self._exemplar_ids(identity_id)
+        if ids:
+            self._index.remove(ids)
+            self._db.executemany("DELETE FROM exemplars WHERE vector_id = ?", [(i,) for i in ids])
+        self._db.execute("DELETE FROM identities WHERE id = ?", (identity_id,))
+        return True
+
     def search(self, embedding: np.ndarray, k: int = 5) -> list[tuple[int, float]]:
         """Top-``k`` identities by best-matching exemplar, best cosine first."""
         if len(self._index) == 0:

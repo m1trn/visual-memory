@@ -415,14 +415,25 @@ class IdentityBinder:
 
     def __init__(self, reid: ReIdentifier, fps: float, fresh: int,
                  reconsider_every: int, min_evidence: int = 2,
-                 swap_margin: float = 0.0) -> None:
+                 swap_margin: float = 0.0, min_new_identity_confidence: float = 0.0,
+                 convincing_confidence: float = 0.0) -> None:
         self.reid = reid
         self.fps = fps
         self.fresh = fresh
         self.reconsider_every = reconsider_every
         self.min_evidence = min_evidence
         self.swap_margin = swap_margin
+        self.min_new_identity_confidence = min_new_identity_confidence
+        # A detection at or above this is a real sighting; below it, a match
+        # came from the tracker's low-confidence second pass and says nothing
+        # about whether a person is there. The tracker's own high_conf.
+        self.convincing_confidence = convincing_confidence
         self.bound: dict[int, Resolution] = {}
+        # Tracks whose identity was taken while they were unseen. Such a track
+        # is the same object's ghost, coasting on a stale prediction while the
+        # real detection went to a new track; re-identifying it would give a
+        # phantom box a fresh number. It stays dormant until actually seen.
+        self._dormant: set[int] = set()
         self.first_frame: dict[int, int] = {}
 
     def identity_of(self, track_id: int) -> int | None:
@@ -436,8 +447,18 @@ class IdentityBinder:
         for track in active:
             self.first_frame.setdefault(track.id, frame_idx)
 
-        held_by_others = {self.bound[t.id].identity_id: self.bound[t.id].score for t in active
-                          if t.id in self.bound and t.time_since_update <= self.fresh}
+        # What each visible object holds, and how well it fits that record NOW.
+        # The score it was bound with is the wrong yardstick: the track that
+        # created an identity holds it at -inf, so any newcomer clearing the
+        # threshold could take a 13-hit person's number the moment he was
+        # occluded. A challenger must beat the holder's actual fit.
+        held_by_others: dict[int, float] = {}
+        for t in active:
+            res = self.bound.get(t.id)
+            if res is None or t.time_since_update > self.fresh:
+                continue
+            fit = self.reid.score_against(res.identity_id, t.exemplars) if len(t.exemplars) else None
+            held_by_others[res.identity_id] = res.score if fit is None else max(fit, res.score)
         in_use = set(held_by_others)
 
         if frame_idx % self.reconsider_every == 0:
@@ -464,16 +485,34 @@ class IdentityBinder:
         for track in active:
             if track.id in self.bound or len(track.exemplars) < self.min_evidence:
                 continue
+            if track.id in self._dormant:
+                # A ghost is released only by a convincing sighting. ByteTrack's
+                # second pass will happily feed a coasting box a 0.18 detection,
+                # and that is not evidence of a person.
+                if track.time_since_update > 0 or track.score < self.convincing_confidence:
+                    continue
+                self._dormant.discard(track.id)
             res = self.reid.resolve(
                 track.label, track.exemplars, self.first_frame[track.id] / fps,
                 frame_idx / fps, track.hits, box=track.box,
                 unavailable=in_use | set(taken_now),
                 held_by_others={**held_by_others, **taken_now},
             )
+            if res.is_new and track.peak_score < self.min_new_identity_confidence:
+                # Not convincing enough to be a new person. The record just
+                # created is withdrawn; the track may still bind to an existing
+                # identity on a later frame if its appearance says so.
+                self.reid.memory.forget(res.identity_id)
+                continue
             for other in active:
                 if other.id != track.id and self.identity_of(other.id) == res.identity_id:
                     del self.bound[other.id]
                     events.taken += 1
+                    # The loser is a ghost unless it was seen convincingly this
+                    # very frame: a coasting box, or one held alive by a weak
+                    # second-pass detection, is the same object's stale copy.
+                    if other.time_since_update > 0 or other.score < self.convincing_confidence:
+                        self._dormant.add(other.id)
             self.bound[track.id] = res
             taken_now[res.identity_id] = res.score
             if res.is_new:
@@ -535,4 +574,5 @@ class IdentityBinder:
         Returns ``(resolution, first_frame)`` so the caller can fold the track's
         final observations into the identity it wore.
         """
+        self._dormant.discard(track_id)
         return self.bound.pop(track_id, None), self.first_frame.pop(track_id, None)

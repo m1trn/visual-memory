@@ -430,3 +430,112 @@ def test_two_people_holding_each_others_numbers_swap_back_only_when_mutual(tmp_p
         events = binder.step([a, neither], frame_idx=2)
         assert events.swapped == 0
         assert binder.identity_of(1) == bob and binder.identity_of(2) == alice
+
+
+def _live_track(tid, views, tsu=0, peak=0.9):
+    from vision_memory.tracker import Track
+    views = [np.asarray(v, dtype=np.float32) for v in views]
+    return Track(id=tid, box=np.array([0.0, 0.0, 10.0, 20.0], dtype=np.float32),
+                 score=peak, class_id=0, label="person", hits=len(views),
+                 time_since_update=tsu, state="active", exemplars=views, peak_score=peak)
+
+
+def test_a_ghost_whose_identity_was_taken_gets_no_new_number(tmp_path) -> None:
+    """A coasting track that loses its identity to a fresh detection is the same object.
+
+    The person was briefly hidden; the tracker coasted their box and then
+    spawned a new track on the real detection. Re-id rightly gives the new
+    track the identity. The coasting ghost must NOT then be re-identified as
+    somebody new - that is a phantom box with a fresh number.
+    """
+    from vision_memory.reidentifier import IdentityBinder
+    e = np.eye(DIM, dtype=np.float32)
+    with VisualMemory(cfg(tmp_path), DIM) as mem:
+        rid = ReIdentifier(mem, FakeVerifier(0.8))
+        binder = IdentityBinder(rid, fps=10.0, fresh=3, reconsider_every=1000,
+                                convincing_confidence=0.5)
+        ghost = _live_track(1, cluster(e[2], 3, seed=51))
+        binder.step([ghost], 0)
+        ident = binder.identity_of(1)
+
+        # Hidden for a while: the ghost coasts, the real detection spawns track 2.
+        ghost = _live_track(1, cluster(e[2], 3, seed=51), tsu=5)
+        fresh = _live_track(2, cluster(e[2], 3, seed=52))
+        events = binder.step([ghost, fresh], 10)
+        assert events.taken == 1 and binder.identity_of(2) == ident
+
+        # Next frames: the ghost is still unseen and must stay unnumbered.
+        events = binder.step([ghost, fresh], 11)
+        assert events.created == 0 and binder.identity_of(1) is None
+        assert len(mem) == 1
+
+        # A weak second-pass match is not a sighting either.
+        weak = _live_track(1, cluster(e[2], 3, seed=51), tsu=0, peak=0.18)
+        events = binder.step([weak, fresh], 11)
+        assert events.created == 0 and binder.identity_of(1) is None
+
+        # If it IS seen again, it is a real track and may be identified.
+        seen = _live_track(1, cluster(e[6], 3, seed=53), tsu=0)
+        events = binder.step([seen, fresh], 12)
+        assert events.created == 1 and binder.identity_of(1) not in (None, ident)
+
+
+def test_a_track_never_seen_convincingly_cannot_create_an_identity(tmp_path) -> None:
+    """A sign post the detector called a person at 0.36 must not become somebody."""
+    from vision_memory.reidentifier import IdentityBinder
+    e = np.eye(DIM, dtype=np.float32)
+    with VisualMemory(cfg(tmp_path), DIM) as mem:
+        rid = ReIdentifier(mem, FakeVerifier(0.8))
+        binder = IdentityBinder(rid, fps=10.0, fresh=3, reconsider_every=1000,
+                                min_new_identity_confidence=0.5)
+        post = _live_track(1, cluster(e[4], 3, seed=61), peak=0.36)
+        events = binder.step([post], 0)
+        assert events.created == 0 and binder.identity_of(1) is None
+        assert len(mem) == 0, "the withdrawn record must not linger in memory"
+
+        # A convincing sighting later makes it eligible.
+        post = _live_track(1, cluster(e[4], 3, seed=61), peak=0.7)
+        events = binder.step([post], 1)
+        assert events.created == 1 and len(mem) == 1
+        ident = binder.identity_of(1)
+
+        # Binding to an EXISTING identity never needed the sighting.
+        weak = _live_track(2, cluster(e[4], 3, seed=62), peak=0.36)
+        binder.forget(1)
+        events = binder.step([weak], 50)
+        assert events.rebound == 1 and binder.identity_of(2) == ident
+
+
+def test_a_newcomer_cannot_take_a_number_from_a_holder_who_still_fits_it(tmp_path) -> None:
+    """The holder's claim is his live fit to the record, not the score he bound at.
+
+    A track that created an identity holds it at -inf, so a newcomer merely
+    clearing the threshold could take a long-lived person's number the moment
+    he was occluded. On the demo clip a man carrying a sign took #2 from the
+    dark-jacketed man who had worn it for 13 hits. The challenger must beat
+    the holder's actual fit by the claim margin.
+    """
+    from vision_memory.reidentifier import IdentityBinder
+    e = np.eye(DIM, dtype=np.float32)
+    with VisualMemory(cfg(tmp_path), DIM) as mem:
+        rid = ReIdentifier(mem, FakeVerifier(0.6))
+        binder = IdentityBinder(rid, fps=10.0, fresh=3, reconsider_every=1000)
+        holder = _live_track(1, cluster(e[2], 4, seed=71))
+        binder.step([holder], 0)
+        ident = binder.identity_of(1)
+
+        # A newcomer whose views resemble the record enough to clear 0.6, but
+        # less than the holder himself does.
+        near = [(np.sqrt(0.7) * e[2] + np.sqrt(0.3) * e[5]).astype(np.float32)] * 3
+        newcomer = _live_track(2, near)
+        events = binder.step([holder, newcomer], 1)
+        assert events.taken == 0
+        assert binder.identity_of(1) == ident and binder.identity_of(2) not in (None, ident)
+
+        # But a holder who has drifted onto something else can be displaced by
+        # someone who plainly fits the record better.
+        binder.forget(2)
+        drifted = _live_track(1, cluster(e[7], 4, seed=72))
+        rightful = _live_track(3, cluster(e[2], 3, seed=73))
+        events = binder.step([drifted, rightful], 20)
+        assert events.taken == 1 and binder.identity_of(3) == ident

@@ -97,6 +97,10 @@ class Track:
     time_since_update: int
     state: str  # "tentative" | "active" | "lost" | "dead"
     embedding: np.ndarray | None = None
+    # The best the detector ever thought of this track. A track that never
+    # cleared a convincing confidence is a candidate false positive, and
+    # that fact is lost if only the latest score is kept.
+    peak_score: float = 0.0
     # Crops are never written to disk, so these L2-normalized observations are
     # everything a dying track can hand to persistent memory.
     exemplars: list[np.ndarray] = field(default_factory=list)
@@ -450,6 +454,7 @@ class ByteTracker:
         track._kf.update(box)
         track.box = _cxcywh_to_xyxy(track._kf.x[:4])
         track.score = det.score
+        track.peak_score = max(track.peak_score, float(det.score))
         track.class_id = det.class_id
         track.label = det.label
         track.hits += 1
@@ -466,6 +471,7 @@ class ByteTracker:
             id=self._next_id,
             box=box,
             score=det.score,
+            peak_score=float(det.score),
             class_id=det.class_id,
             label=det.label,
             hits=1,

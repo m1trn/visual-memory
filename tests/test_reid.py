@@ -16,7 +16,7 @@ DIM = 16
 
 def cfg(min_pair_gap: int = 2, verifier: str = "cosine", test_fraction: float = 0.3) -> ReidConfig:
     return ReidConfig(
-        verifier=verifier, min_pair_gap=min_pair_gap, max_pairs_per_track=200, observation_quantile=0.75, max_false_merge_rate=0.02, claim_margin=0.08, swap_margin=0.08, merge_margin=0.05, reconsider_every=15, continuity_bonus=0.15, spatial_scale=2.0, temporal_scale=2.0,
+        verifier=verifier, min_pair_gap=min_pair_gap, max_pairs_per_track=200, observation_quantile=0.75, max_false_merge_rate=0.02, claim_margin=0.08, swap_margin=0.08, min_new_identity_confidence=0.5, merge_margin=0.05, reconsider_every=15, continuity_bonus=0.15, spatial_scale=2.0, temporal_scale=2.0,
         test_fraction=test_fraction, seed=0
     )
 

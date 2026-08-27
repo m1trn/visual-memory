@@ -67,6 +67,7 @@ class ReidConfig:
     max_false_merge_rate: float
     claim_margin: float
     swap_margin: float
+    min_new_identity_confidence: float
     merge_margin: float
     reconsider_every: int
     continuity_bonus: float

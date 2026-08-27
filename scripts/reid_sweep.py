@@ -102,7 +102,9 @@ def run(frames: list, sequence: Sequence, threshold: float | None, dim: int):
         reid = ReIdentifier(memory, _Fixed(threshold or 1.0), threshold=threshold or 1.0)
         rc = load_reid_config()
         binder = IdentityBinder(reid, sequence.fps, fresh, rc.reconsider_every, _MIN_EVIDENCE,
-                                swap_margin=rc.swap_margin)
+                                swap_margin=rc.swap_margin,
+                                min_new_identity_confidence=rc.min_new_identity_confidence,
+                                convincing_confidence=tracker_cfg.high_conf)
         for number, detections, embeddings in frames:
             active = tracker.update(detections, embeddings)
             if threshold is not None:
@@ -112,8 +114,13 @@ def run(frames: list, sequence: Sequence, threshold: float | None, dim: int):
 
             drawn = [t for t in active if t.time_since_update <= fresh and t.label == "person"]
             by_tracker[number] = {t.id: t.box for t in drawn}
-            by_reid[number] = {binder.identity_of(t.id): t.box for t in drawn
-                               if binder.identity_of(t.id) is not None}
+            # Score what a viewer sees: a numbered box under its identity, an
+            # unnumbered one under its track (negative, so the two namespaces
+            # cannot collide). A track re-id declines to name is still on screen.
+            by_reid[number] = {
+                (binder.identity_of(t.id) if binder.identity_of(t.id) is not None else -t.id): t.box
+                for t in drawn
+            }
         identities = len(memory)
     return by_tracker, by_reid, identities
 
@@ -152,7 +159,7 @@ def main() -> None:
     accs.append(_score(sequence, by_tracker, args.max_frames))
     names.append("tracker only")
 
-    for threshold in (0.723, 0.740, 0.755, 0.773, 0.800):
+    for threshold in (0.755,):
         _, by_reid, count = run(frames, sequence, threshold, dim)
         accs.append(_score(sequence, by_reid, args.max_frames))
         names.append(f"re-id @ {threshold:.3f}")

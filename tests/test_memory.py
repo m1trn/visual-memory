@@ -209,3 +209,19 @@ def test_merging_a_missing_identity_is_an_error(tmp_path) -> None:
         assert mem.merge(only, only) == only        # merging with itself is a no-op
         with pytest.raises(KeyError):
             mem.merge(only, 999)
+
+
+def test_forget_removes_the_identity_and_its_vectors(tmp_path) -> None:
+    from vision_memory.config import MemoryConfig
+    from vision_memory.memory import VisualMemory
+    e = np.eye(8, dtype=np.float32)
+    cfg = MemoryConfig(db_path=str(tmp_path / "m.db"), index_path=str(tmp_path / "m.faiss"),
+                       exemplars_per_identity=5, reid_threshold=0.8)
+    with VisualMemory(cfg, 8) as mem:
+        keep = mem.remember("bag", [e[1]], 0.0, 1.0, 1)
+        gone = mem.remember("bag", [e[2], e[3]], 2.0, 3.0, 2)
+        assert mem.forget(gone) is True
+        assert mem.get(gone) is None and mem.get(keep) is not None
+        assert len(mem) == 1 and len(mem._index) == 1
+        assert [i for i, _ in mem.search(e[2], k=5)] == [keep]
+        assert mem.forget(gone) is False
