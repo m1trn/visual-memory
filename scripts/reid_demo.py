@@ -37,7 +37,7 @@ from vision_memory.encoder import Encoder  # noqa: E402
 from vision_memory.memory import VisualMemory  # noqa: E402
 from vision_memory.reid import (Verifier, balance, build_verifier,
                                 calibrate_identity_threshold, mine_pairs, split_by_group)  # noqa: E402
-from vision_memory.reidentifier import ReIdentifier, Resolution  # noqa: E402
+from vision_memory.reidentifier import IdentityBinder, ReIdentifier, Resolution  # noqa: E402
 from vision_memory.tracker import ByteTracker  # noqa: E402
 
 _DEFAULT_VIDEO = Path("data/samples/vtest.avi")
@@ -140,11 +140,13 @@ def main() -> None:
     part_path = out_path.with_suffix(".part.mp4")
     writer = cv2.VideoWriter(str(part_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
     fresh = video_cfg.detect_every_n_frames
-    bound: dict[int, Resolution] = {}
-    first_frame: dict[int, int] = {}
     lost_count = rebound = created = reclaimed = taken = frame_idx = 0
     with VisualMemory(mem_cfg, describer.dim) as memory:
         reid = ReIdentifier(memory, verifier, threshold=threshold)
+        # The binding rules - who may wear which number, when a stronger claim
+        # takes one, when a track revisits its own - live in IdentityBinder, so
+        # the demo, the labelled evaluation and the sweep run the same system.
+        binder = IdentityBinder(reid, fps, fresh, reid_cfg.reconsider_every, _MIN_EVIDENCE)
         while frame_idx < args.max_frames:
             ok, frame = cap.read()
             if not ok:
@@ -156,81 +158,25 @@ def main() -> None:
             # alone, which is how one person ends up with another's id.
             embeddings = describe_detections(describer, frame, detections) if detections else None
             active = tracker.update(detections, embeddings)
-            first_frame.update({t.id: frame_idx for t in active if t.id not in first_frame})
-
-            # Identify a track as soon as it has enough appearance evidence,
-            # while it is still being watched, rather than waiting for it to die.
-            # This is what makes the number on screen stable from the moment the
-            # object appears, and it is also how a live system has to work: you
-            # cannot tell a viewer who somebody is only once they have left.
-            # A track already identified keeps being reconsidered: its first
-            # binding rested on two observations, and it must be able to reclaim
-            # an earlier record once it has more to show for itself.
-            # Identities worn by something on screen right now are off limits.
-            # What each visible object holds, and how well it matched when it
-            # claimed it. A stronger claim may take one of these; the loser is
-            # then re-identified rather than left wearing a number twice.
-            held_by_others = {bound[t.id].identity_id: bound[t.id].score for t in active
-                              if t.id in bound and t.time_since_update <= fresh}
-            in_use = set(held_by_others)
-
-            for track in active:
-                held = bound.get(track.id)
-                if held is not None and track.exemplars and frame_idx % reid_cfg.reconsider_every == 0:
-                    revised = reid.reconsider(held.identity_id, track.label, track.exemplars,
-                                              first_frame.get(track.id, frame_idx) / fps,
-                                              frame_idx / fps, track.hits, box=track.box,
-                                              unavailable=in_use - {held.identity_id})
-                    if revised is not None:
-                        merged_away = {t: r for t, r in bound.items() if r.identity_id == held.identity_id}
-                        for t in merged_away:
-                            bound[t] = revised
-                        reclaimed += 1
-
-            for track in active:
-                if track.id in bound or len(track.exemplars) < _MIN_EVIDENCE:
-                    continue
-                # Both maps are rebuilt from `bound` on every pass, not reused
-                # from the snapshot above: a track resolved earlier in this same
-                # frame has already taken an identity, and a stale snapshot
-                # neither marks it unavailable nor lists the score it was won
-                # with. A later track would then be free to take it without
-                # clearing `claim_margin`, which is the one check standing
-                # between two similar-looking people and a swapped number.
-                taken_now = {r.identity_id: r.score for r in bound.values()}
-                res = reid.resolve(track.label, track.exemplars,
-                                   first_frame.get(track.id, frame_idx) / fps,
-                                   frame_idx / fps, track.hits, box=track.box,
-                                   unavailable=in_use | set(taken_now),
-                                   held_by_others={**held_by_others, **taken_now})
-                # If it took an identity from someone, that holder must give it up.
-                displaced = [t for t in active if t.id != track.id and t.id in bound
-                             and bound[t.id].identity_id == res.identity_id]
-                for other in displaced:
-                    del bound[other.id]
-                    taken += 1
-                bound[track.id] = res
-                created += res.is_new
-                rebound += not res.is_new
-
-            # Keep every identified object's whereabouts current, so a track that
-            # dies here can lend its continuity to one appearing here next.
-            for track in active:
-                res = bound.get(track.id)
-                if res is not None and track.time_since_update == 0:
-                    reid.note_seen(res.identity_id, frame_idx / fps, track.box)
+            events = binder.step(active, frame_idx)
+            created += events.created
+            rebound += events.rebound
+            reclaimed += events.reclaimed
+            taken += events.taken
 
             # Keep drawing a track for as long as it is held, marking the frames
             # where its position is predicted rather than measured. Hiding it
             # made an occluded person vanish, which reads as losing them.
             _draw(frame, [(t.id, t.box.copy(), t.label, t.time_since_update > fresh)
-                          for t in active], bound)
+                          for t in active], binder.bound)
             writer.write(frame)
 
             for lost in tracker.pop_lost():
                 lost_count += 1
-                res = bound.get(lost.id)
-                first = first_frame.pop(lost.id, frame_idx) / fps
+                # A dead track releases its number - otherwise it stays "in
+                # use" forever and the person can never be re-identified.
+                res, born = binder.forget(lost.id)
+                first = (frame_idx if born is None else born) / fps
                 last = (frame_idx - lost.time_since_update) / fps
                 if res is not None and lost.exemplars:
                     # Fold everything the track ended up seeing into the identity

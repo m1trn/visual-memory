@@ -348,3 +348,40 @@ def test_a_claim_cannot_take_an_identity_that_was_co_alive(tmp_path) -> None:
                             unavailable={holder.identity_id},
                             held_by_others={holder.identity_id: 0.1})
         assert taken.is_new and taken.identity_id != holder.identity_id
+
+
+def test_a_dead_track_releases_its_identity_so_the_person_can_return(tmp_path) -> None:
+    """Only live tracks make an identity unavailable.
+
+    A track that has died must let go of its number. Without that, every
+    identity ever bound stays "in use" forever and a returning person is
+    always called new - which is exactly what the demo did for a day.
+    """
+    from vision_memory.reidentifier import IdentityBinder
+    from vision_memory.tracker import Track
+
+    e = np.eye(DIM, dtype=np.float32)
+
+    def track(tid: int, views: list[np.ndarray], tsu: int = 0) -> Track:
+        return Track(id=tid, box=np.array([0.0, 0.0, 10.0, 20.0], dtype=np.float32),
+                     score=0.9, class_id=0, label="person", hits=len(views),
+                     time_since_update=tsu, state="active", exemplars=views)
+
+    with VisualMemory(cfg(tmp_path), DIM) as mem:
+        rid = ReIdentifier(mem, FakeVerifier(0.8))
+        binder = IdentityBinder(rid, fps=10.0, fresh=3, reconsider_every=1000)
+
+        first = track(1, cluster(e[2], 3, seed=31))
+        binder.step([first], frame_idx=0)
+        original = binder.identity_of(1)
+        assert original is not None
+
+        # The track died. Even before the caller forgets it, a track that is
+        # no longer live must not hold its number against a returning person.
+        again = track(2, cluster(e[2], 3, seed=32))
+        events = binder.step([again], frame_idx=100)
+        assert events.rebound == 1 and events.created == 0
+        assert binder.identity_of(2) == original, "a returning person must get their number back"
+
+        binder.forget(1)
+        assert binder.identity_of(1) is None

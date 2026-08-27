@@ -41,7 +41,7 @@ from vision_memory.detector import YoloOnnxDetector  # noqa: E402
 from vision_memory.memory import VisualMemory  # noqa: E402
 from vision_memory.motchallenge import (  # noqa: E402
     Sequence, find_sequences, load_sequence, metrics_module)
-from vision_memory.reidentifier import ReIdentifier  # noqa: E402
+from vision_memory.reidentifier import IdentityBinder, ReIdentifier  # noqa: E402
 from vision_memory.tracker import ByteTracker  # noqa: E402
 
 # Boxes labelled less visible than this are excluded from scoring: a sliver of
@@ -76,12 +76,11 @@ def _run(sequence: Sequence, max_frames: int | None) -> tuple[dict, dict, int]:
     tracker = ByteTracker(tracker_cfg)
     by_tracker: dict[int, dict[int, np.ndarray]] = {}
     by_reid: dict[int, dict[int, np.ndarray]] = {}
-    bound: dict[int, object] = {}
-    first_frame: dict[int, int] = {}
     fresh = video_cfg.detect_every_n_frames
 
     with VisualMemory(mem_cfg, describer.dim) as memory:
         reid = ReIdentifier(memory, verifier, threshold=threshold)
+        binder = IdentityBinder(reid, sequence.fps, fresh, reid_cfg.reconsider_every, _MIN_EVIDENCE)
         for number, frame in sequence.frames():
             if max_frames is not None and number > max_frames:
                 break
@@ -91,53 +90,14 @@ def _run(sequence: Sequence, max_frames: int | None) -> tuple[dict, dict, int]:
             else:
                 detections, embeddings = None, None
             active = tracker.update(detections, embeddings)
-
-            for track in active:
-                first_frame.setdefault(track.id, number)
-                held = bound.get(track.id)
-                if held is not None and track.time_since_update == 0:
-                    reid.note_seen(held.identity_id, number / sequence.fps, track.box)
-
-            held_by_others = {bound[t.id].identity_id: bound[t.id].score for t in active
-                              if t.id in bound and t.time_since_update <= fresh}
-            in_use = set(held_by_others)
-            # A binding made from two observations must be allowed to improve,
-            # or an object called new can never reclaim its earlier record. The
-            # demo has always done this; the evaluation must exercise the same
-            # system it scores.
-            if number % reid_cfg.reconsider_every == 0:
-                for track in active:
-                    held = bound.get(track.id)
-                    if held is None or not track.exemplars:
-                        continue
-                    revised = reid.reconsider(
-                        held.identity_id, track.label, track.exemplars,
-                        first_frame[track.id] / sequence.fps, number / sequence.fps,
-                        track.hits, box=track.box,
-                        unavailable=in_use - {held.identity_id},
-                    )
-                    if revised is not None:
-                        for other, r in list(bound.items()):
-                            if r.identity_id == held.identity_id:
-                                bound[other] = revised
-            for track in active:
-                if track.id in bound or len(track.exemplars) < _MIN_EVIDENCE:
-                    continue
-                taken_now = {r.identity_id: r.score for r in bound.values()}
-                res = reid.resolve(
-                    track.label, track.exemplars, first_frame[track.id] / sequence.fps,
-                    number / sequence.fps, track.hits, box=track.box,
-                    unavailable=in_use | set(taken_now),
-                    held_by_others={**held_by_others, **taken_now},
-                )
-                for other in [t for t in active if t.id != track.id and t.id in bound
-                              and bound[t.id].identity_id == res.identity_id]:
-                    del bound[other.id]
-                bound[track.id] = res
+            binder.step(active, number)
+            for lost in tracker.pop_lost():
+                binder.forget(lost.id)
 
             drawn = [t for t in active if t.time_since_update <= fresh and t.label == "person"]
             by_tracker[number] = {t.id: t.box for t in drawn}
-            by_reid[number] = {bound[t.id].identity_id: t.box for t in drawn if t.id in bound}
+            by_reid[number] = {binder.identity_of(t.id): t.box for t in drawn
+                               if binder.identity_of(t.id) is not None}
         identities = len(memory)
     return by_tracker, by_reid, identities
 

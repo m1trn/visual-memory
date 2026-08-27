@@ -370,3 +370,116 @@ def _stack_unit(embeddings: Sequence[np.ndarray], dim: int) -> np.ndarray:
         raise ValueError(f"expected (N, {dim}), got {v.shape}")
     norms = np.linalg.norm(v, axis=1, keepdims=True)
     return np.ascontiguousarray(np.divide(v, norms, out=v.copy(), where=norms > 0))
+
+
+@dataclass
+class BindingEvents:
+    """What one frame of binding did, for callers that count or draw."""
+
+    created: int = 0
+    rebound: int = 0
+    reclaimed: int = 0
+    taken: int = 0
+
+
+class IdentityBinder:
+    """Keeps live tracks bound to identities, frame by frame.
+
+    Three scripts carried their own copy of this loop and the copies drifted:
+    one fix landed in the demo but not the evaluation, another landed
+    everywhere but was wrong in all three at once. The rules live here now.
+
+    A track is identified as soon as it has enough appearance evidence, while
+    it is still being watched — a viewer cannot be told who somebody is only
+    after they have left. Identities worn by something on screen are off
+    limits to anyone else, though a clearly stronger claim may take one; the
+    loser is then re-identified. A binding made from two observations is
+    revisited as the track accumulates more, so a record it missed at first can
+    still be reclaimed.
+
+    Two bookkeeping facts this class exists to get right. Only tracks that are
+    *alive* make an identity unavailable — a track that has died must release
+    its number, or every person who ever appeared is permanently "in use" and
+    no one can ever be re-identified. And within one frame, an identity bound a
+    moment ago by an earlier track is unavailable to later ones at the score it
+    was won with, so the claim margin cannot be bypassed by ordering.
+    """
+
+    def __init__(self, reid: ReIdentifier, fps: float, fresh: int,
+                 reconsider_every: int, min_evidence: int = 2) -> None:
+        self.reid = reid
+        self.fps = fps
+        self.fresh = fresh
+        self.reconsider_every = reconsider_every
+        self.min_evidence = min_evidence
+        self.bound: dict[int, Resolution] = {}
+        self.first_frame: dict[int, int] = {}
+
+    def identity_of(self, track_id: int) -> int | None:
+        res = self.bound.get(track_id)
+        return None if res is None else res.identity_id
+
+    def step(self, active: Sequence, frame_idx: int) -> BindingEvents:
+        """Bind, revisit and record whereabouts for every live track this frame."""
+        events = BindingEvents()
+        fps = self.fps
+        for track in active:
+            self.first_frame.setdefault(track.id, frame_idx)
+
+        held_by_others = {self.bound[t.id].identity_id: self.bound[t.id].score for t in active
+                          if t.id in self.bound and t.time_since_update <= self.fresh}
+        in_use = set(held_by_others)
+
+        if frame_idx % self.reconsider_every == 0:
+            for track in active:
+                held = self.bound.get(track.id)
+                if held is None or not track.exemplars:
+                    continue
+                revised = self.reid.reconsider(
+                    held.identity_id, track.label, track.exemplars,
+                    self.first_frame[track.id] / fps, frame_idx / fps, track.hits,
+                    box=track.box, unavailable=in_use - {held.identity_id},
+                )
+                if revised is not None:
+                    for other, res in list(self.bound.items()):
+                        if res.identity_id == held.identity_id:
+                            self.bound[other] = revised
+                    events.reclaimed += 1
+
+        # Identities bound earlier in THIS frame, at the score they were won
+        # with. Rebuilt from live bindings only: a dead track's entry must not
+        # count, which is why the whole of `bound` is never used here.
+        taken_now: dict[int, float] = {}
+        for track in active:
+            if track.id in self.bound or len(track.exemplars) < self.min_evidence:
+                continue
+            res = self.reid.resolve(
+                track.label, track.exemplars, self.first_frame[track.id] / fps,
+                frame_idx / fps, track.hits, box=track.box,
+                unavailable=in_use | set(taken_now),
+                held_by_others={**held_by_others, **taken_now},
+            )
+            for other in active:
+                if other.id != track.id and self.identity_of(other.id) == res.identity_id:
+                    del self.bound[other.id]
+                    events.taken += 1
+            self.bound[track.id] = res
+            taken_now[res.identity_id] = res.score
+            if res.is_new:
+                events.created += 1
+            else:
+                events.rebound += 1
+
+        for track in active:
+            res = self.bound.get(track.id)
+            if res is not None and track.time_since_update == 0:
+                self.reid.note_seen(res.identity_id, frame_idx / fps, track.box)
+        return events
+
+    def forget(self, track_id: int) -> tuple[Resolution | None, int | None]:
+        """Release a dead track's binding and return what it held.
+
+        Returns ``(resolution, first_frame)`` so the caller can fold the track's
+        final observations into the identity it wore.
+        """
+        return self.bound.pop(track_id, None), self.first_frame.pop(track_id, None)

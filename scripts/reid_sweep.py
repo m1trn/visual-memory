@@ -37,7 +37,7 @@ from vision_memory.detector import YoloOnnxDetector  # noqa: E402
 from vision_memory.memory import VisualMemory  # noqa: E402
 from vision_memory.motchallenge import (  # noqa: E402
     Sequence, find_sequences, load_sequence, metrics_module)
-from vision_memory.reidentifier import ReIdentifier  # noqa: E402
+from vision_memory.reidentifier import IdentityBinder, ReIdentifier  # noqa: E402
 from vision_memory.tracker import ByteTracker  # noqa: E402
 
 CACHE = Path("data/mot/detection_cache.pkl")
@@ -90,8 +90,6 @@ def run(frames: list, sequence: Sequence, threshold: float | None, dim: int):
     tracker = ByteTracker(tracker_cfg)
     by_tracker: dict[int, dict[int, np.ndarray]] = {}
     by_reid: dict[int, dict[int, np.ndarray]] = {}
-    bound: dict[int, object] = {}
-    first_frame: dict[int, int] = {}
 
     scratch = Path("data/scratch/sweep")
     scratch.mkdir(parents=True, exist_ok=True)
@@ -102,36 +100,19 @@ def run(frames: list, sequence: Sequence, threshold: float | None, dim: int):
 
     with VisualMemory(mem_cfg, dim) as memory:
         reid = ReIdentifier(memory, _Fixed(threshold or 1.0), threshold=threshold or 1.0)
+        binder = IdentityBinder(reid, sequence.fps, fresh,
+                                load_reid_config().reconsider_every, _MIN_EVIDENCE)
         for number, detections, embeddings in frames:
             active = tracker.update(detections, embeddings)
-            for track in active:
-                first_frame.setdefault(track.id, number)
-                held = bound.get(track.id)
-                if held is not None and track.time_since_update == 0:
-                    reid.note_seen(held.identity_id, number / sequence.fps, track.box)
-
             if threshold is not None:
-                held_by = {bound[t.id].identity_id: bound[t.id].score for t in active
-                           if t.id in bound and t.time_since_update <= fresh}
-                in_use = set(held_by)
-                for track in active:
-                    if track.id in bound or len(track.exemplars) < _MIN_EVIDENCE:
-                        continue
-                    taken = {r.identity_id: r.score for r in bound.values()}
-                    res = reid.resolve(
-                        track.label, track.exemplars, first_frame[track.id] / sequence.fps,
-                        number / sequence.fps, track.hits, box=track.box,
-                        unavailable=in_use | set(taken),
-                        held_by_others={**held_by, **taken},
-                    )
-                    for other in [t for t in active if t.id != track.id and t.id in bound
-                                  and bound[t.id].identity_id == res.identity_id]:
-                        del bound[other.id]
-                    bound[track.id] = res
+                binder.step(active, number)
+            for lost in tracker.pop_lost():
+                binder.forget(lost.id)
 
             drawn = [t for t in active if t.time_since_update <= fresh and t.label == "person"]
             by_tracker[number] = {t.id: t.box for t in drawn}
-            by_reid[number] = {bound[t.id].identity_id: t.box for t in drawn if t.id in bound}
+            by_reid[number] = {binder.identity_of(t.id): t.box for t in drawn
+                               if binder.identity_of(t.id) is not None}
         identities = len(memory)
     return by_tracker, by_reid, identities
 
