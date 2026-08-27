@@ -286,3 +286,27 @@ def test_a_weak_detection_associates_but_is_never_remembered() -> None:
 
     (track,) = tracker.update([Detection(np.array(box), 0.8, 0, "person")], {0: good})
     assert len(track.exemplars) == 2
+
+
+def test_recent_views_are_chronological_even_when_the_buffer_is_full() -> None:
+    """Audit finding: exemplars[-n:] is a diverse sample, not the latest views."""
+    cfg = _cfg(min_hits=1, max_exemplars=3, veto_views=2, embed_every_n=1)
+    tracker = ByteTracker(cfg)
+    e = np.eye(6, dtype=np.float32)
+    box = np.array([0.0, 0.0, 10.0, 20.0])
+    for v in [e[0], e[1], e[2], e[0], e[0]]:
+        (track,) = tracker.update([Detection(box, 0.9, 0, "person")], {0: v})
+    assert len(track.exemplars) == 3
+    assert len(track.recent) == 2
+    assert np.allclose(track.recent[-1], e[0]) and np.allclose(track.recent[-2], e[0])
+
+
+def test_due_for_embedding_respects_the_exemplar_gate() -> None:
+    """Audit finding: the encode-after-association path skipped min_exemplar_confidence."""
+    cfg = _cfg(min_hits=1, min_exemplar_confidence=0.3, embed_every_n=1)
+    tracker = ByteTracker(cfg)
+    box = np.array([0.0, 0.0, 10.0, 20.0])
+    tracker.update([Detection(box, 0.9, 0, "person")])
+    assert len(tracker.due_for_embedding()) == 1
+    tracker.update([Detection(box, 0.2, 0, "person")])
+    assert tracker.due_for_embedding() == [], "a weak box must not be offered for embedding"

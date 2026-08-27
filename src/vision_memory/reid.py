@@ -14,7 +14,7 @@ cosine similarity.
 
 from __future__ import annotations
 
-from typing import Mapping, Protocol, Sequence
+from typing import Callable, Mapping, Protocol, Sequence
 
 import numpy as np
 from sklearn.linear_model import LogisticRegression
@@ -150,6 +150,20 @@ def balance(y: np.ndarray, mask: np.ndarray, rng: np.random.Generator) -> np.nda
 
 
 
+def identity_score_with(verifier, query: np.ndarray, exemplars: np.ndarray, quantile: float) -> float:
+    """``identity_score`` on whatever scale ``verifier.score`` produces.
+
+    Max over exemplars, quantile over observations - the same aggregation
+    ``ReIdentifier._score_identity`` applies at runtime, so a boundary fitted
+    on this is on the scale it will be compared against.
+    """
+    q = np.asarray(query, np.float32)
+    e = np.asarray(exemplars, np.float32)
+    m, n = len(q), len(e)
+    scores = np.asarray(verifier.score(np.repeat(q, n, axis=0), np.tile(e, (m, 1))), np.float32)
+    return float(np.percentile(scores.reshape(m, n).max(axis=1), 100.0 * quantile))
+
+
 def identity_score(query: np.ndarray, exemplars: np.ndarray, quantile: float) -> float:
     """Score a whole track against one identity: max over exemplars, quantile over observations."""
     per_observation = (np.asarray(query, np.float32) @ np.asarray(exemplars, np.float32).T).max(axis=1)
@@ -162,6 +176,7 @@ def calibrate_identity_threshold(
     quantile: float,
     exemplars_per_identity: int,
     max_false_merge_rate: float = 0.0,
+    score: "Callable[[np.ndarray, np.ndarray, float], float] | None" = None,
 ) -> tuple[float, int, int]:
     """Learn the accept/reject boundary on track-versus-identity scores.
 
@@ -184,8 +199,14 @@ def calibrate_identity_threshold(
     median against 0.653 at the 95th percentile of provably-different pairs —
     that Youden lands on a boundary with a 21% false-merge rate.
 
+    ``score`` is the identity scorer the boundary will be applied to. It
+    defaults to the cosine ``identity_score``; a caller using a different
+    verifier must pass its own, or a boundary on one scale is compared
+    against numbers on another.
+
     Returns ``(threshold, n_positive, n_negative)``.
     """
+    scorer = identity_score if score is None else score
     usable = {t: _stack(v) for t, v in tracks.items() if len(v) >= 4 and len(frames.get(t, ()))}
     if len(usable) < 2:
         raise ValueError("calibration needs at least two tracks with several observations each")
@@ -201,13 +222,20 @@ def calibrate_identity_threshold(
     pos, neg = [], []
     for t, v in usable.items():
         query = v[half[t] :]
-        pos.append(identity_score(query, stored[t], quantile))
+        pos.append(scorer(query, stored[t], quantile))
         for other in usable:
             if other == t:
                 continue
             (a0, a1), (b0, b1) = span[t], span[other]
             if a0 <= b1 and b0 <= a1:  # co-alive, so provably a different object
-                neg.append(identity_score(query, stored[other], quantile))
+                s = scorer(query, stored[other], quantile)
+                # Two objects of different kinds live in disjoint slices of
+                # the routed vector and score exactly 0. Re-identification
+                # label-gates its shortlist, so such a pair can never reach
+                # the boundary; counting it as an easy negative dilutes the
+                # false-merge budget with cases that cannot occur.
+                if s != 0.0:
+                    neg.append(s)
     if not pos or not neg:
         raise ValueError("calibration needs both same-object and different-object examples")
 

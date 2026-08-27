@@ -225,3 +225,29 @@ def test_forget_removes_the_identity_and_its_vectors(tmp_path) -> None:
         assert len(mem) == 1 and len(mem._index) == 1
         assert [i for i, _ in mem.search(e[2], k=5)] == [keep]
         assert mem.forget(gone) is False
+
+
+def test_rows_beside_a_missing_index_are_reconciled_away(tmp_path) -> None:
+    from vision_memory.config import MemoryConfig
+    from vision_memory.memory import VisualMemory
+    e = np.eye(8, dtype=np.float32)
+    cfg = MemoryConfig(db_path=str(tmp_path / "m.db"), index_path=str(tmp_path / "m.faiss"),
+                       exemplars_per_identity=5, reid_threshold=0.8)
+    with VisualMemory(cfg, 8) as mem:
+        ident = mem.remember("bag", [e[1], e[2]], 0.0, 1.0, 2)
+    (tmp_path / "m.faiss").unlink()
+    with VisualMemory(cfg, 8) as mem:
+        assert len(mem.exemplar_vectors(ident)) == 0
+        assert mem.search(e[1], k=5) == []
+
+
+def test_search_rejects_a_non_positive_k(tmp_path) -> None:
+    import pytest
+    from vision_memory.config import MemoryConfig
+    from vision_memory.memory import VisualMemory
+    cfg = MemoryConfig(db_path=str(tmp_path / "m.db"), index_path=str(tmp_path / "m.faiss"),
+                       exemplars_per_identity=5, reid_threshold=0.8)
+    with VisualMemory(cfg, 8) as mem:
+        mem.remember("bag", [np.eye(8, dtype=np.float32)[0]], 0.0, 1.0, 1)
+        with pytest.raises(ValueError):
+            mem.search(np.eye(8, dtype=np.float32)[0], k=-1)

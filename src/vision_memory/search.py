@@ -43,6 +43,9 @@ class VectorIndex:
             return (np.full((len(q), k), -np.inf, np.float32),
                     np.full((len(q), k), -1, np.int64))
         scores, ids = self._index.search(q, k)
+        # FAISS pads a short result with id -1 and -FLT_MAX; the empty-index
+        # branch above hands back -inf. Callers get one sentinel.
+        scores = np.where(ids < 0, -np.inf, scores).astype(np.float32)
         return scores, ids
 
     def remove(self, ids: Sequence[int]) -> int:

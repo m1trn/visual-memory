@@ -35,8 +35,8 @@ from vision_memory.detector import YoloOnnxDetector  # noqa: E402
 from vision_memory.appearance import build_describer, describe_detections  # noqa: E402
 from vision_memory.encoder import Encoder  # noqa: E402
 from vision_memory.memory import VisualMemory  # noqa: E402
-from vision_memory.reid import (Verifier, balance, build_verifier,
-                                calibrate_identity_threshold, mine_pairs, split_by_group)  # noqa: E402
+from vision_memory.reid import (Verifier, balance, build_verifier, calibrate_identity_threshold,
+                                identity_score_with, mine_pairs, split_by_group)  # noqa: E402
 from vision_memory.reidentifier import IdentityBinder, ReIdentifier, Resolution  # noqa: E402
 from vision_memory.tracker import ByteTracker  # noqa: E402
 
@@ -65,9 +65,13 @@ def _fit_verifier(pairs_path: Path) -> tuple[Verifier, float]:
     verifier.fit(a[train_mask], b[train_mask], y[train_mask])
     # The verifier's own boundary is fitted to pair scores; the binding decision
     # compares an aggregate, so it needs a boundary fitted to that instead.
+    # Fitted on the scale the verifier actually produces: a cosine boundary
+    # applied to a logistic probability would be a number from one world
+    # compared against numbers from another.
     threshold, n_pos, n_neg = calibrate_identity_threshold(
         observations, seen_on, cfg.observation_quantile,
         load_memory_config().exemplars_per_identity, cfg.max_false_merge_rate,
+        score=lambda q, e, quant: identity_score_with(verifier, q, e, quant),
     )
     print(f"calibrated on {n_pos} same-object and {n_neg} provably-different track/identity examples")
     return verifier, threshold
@@ -180,15 +184,16 @@ def main() -> None:
                 lost_count += 1
                 # A dead track releases its number - otherwise it stays "in
                 # use" forever and the person can never be re-identified.
-                res, born = binder.forget(lost.id)
+                res, born, folded = binder.forget(lost.id)
                 first = (frame_idx if born is None else born) / fps
                 last = (frame_idx - lost.time_since_update) / fps
                 if res is not None and lost.exemplars:
                     # Fold everything the track ended up seeing into the identity
                     # it was already given, so memory keeps the better record
                     # without the number on screen ever changing.
+                    # Only the hits memory has not already been told about.
                     memory.remember(lost.label, lost.exemplars, first, last,
-                                    lost.hits, identity_id=res.identity_id)
+                                    max(lost.hits - folded, 0), identity_id=res.identity_id)
 
             frame_idx += 1
 

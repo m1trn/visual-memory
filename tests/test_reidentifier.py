@@ -573,3 +573,55 @@ def test_a_track_that_slid_onto_another_body_loses_the_number_and_finds_its_own(
         # Next frame the displaced track is judged afresh and gets Bob back.
         events = binder.step([slid, alice_again], 31)
         assert binder.identity_of(1) == b_id and events.rebound == 1
+
+
+def test_a_holders_claim_is_his_live_fit_not_the_score_he_bound_at(tmp_path) -> None:
+    """Audit finding: max(fit, binding score) let history defend a drifted holder."""
+    from vision_memory.reidentifier import IdentityBinder, Resolution
+    e = np.eye(DIM, dtype=np.float32)
+    with VisualMemory(cfg(tmp_path), DIM) as mem:
+        rid = ReIdentifier(mem, FakeVerifier(0.6))
+        binder = IdentityBinder(rid, fps=10.0, fresh=3, reconsider_every=1000, recent_views=3)
+        alice = mem.remember("person", list(cluster(e[1], 4, seed=91)), 0.0, 1.0, 4)
+        drifted = _live_track(1, cluster(e[7], 3, seed=92))   # re-bound at 0.95 once; looks nothing like Alice now
+        binder.bound[1] = Resolution(identity_id=alice, score=0.95, is_new=False)
+        binder.first_frame[1] = 0
+        rightful = _live_track(2, cluster(e[1], 3, seed=93))
+        events = binder.step([drifted, rightful], 50)   # well after Alice's stored 0-1 s
+        assert events.taken == 1 and binder.identity_of(2) == alice
+
+
+def test_a_same_frame_creator_is_guarded_at_his_own_fit(tmp_path) -> None:
+    """Audit finding: taken_now recorded -inf for a creator, so a newcomer took it for free."""
+    from vision_memory.reidentifier import IdentityBinder
+    e = np.eye(DIM, dtype=np.float32)
+    with VisualMemory(cfg(tmp_path), DIM) as mem:
+        rid = ReIdentifier(mem, FakeVerifier(0.6))
+        binder = IdentityBinder(rid, fps=10.0, fresh=3, reconsider_every=1000, recent_views=3)
+        creator = _live_track(1, cluster(e[2], 3, seed=94))
+        near = [(np.sqrt(0.7) * e[2] + np.sqrt(0.3) * e[5]).astype(np.float32)] * 3
+        lookalike = _live_track(2, near)        # clears 0.6 against the creator, but fits worse than he does
+        events = binder.step([creator, lookalike], 0)   # both resolved in ONE frame
+        assert events.taken == 0
+        assert binder.identity_of(1) is not None
+        assert binder.identity_of(2) not in (None, binder.identity_of(1))
+
+
+def test_an_identity_gained_by_a_merge_this_frame_is_unavailable_to_newcomers(tmp_path) -> None:
+    """Audit finding: holdings were computed before the merge loop."""
+    from vision_memory.reidentifier import IdentityBinder
+    e = np.eye(DIM, dtype=np.float32)
+    with VisualMemory(cfg(tmp_path), DIM) as mem:
+        rid = ReIdentifier(mem, FakeVerifier(0.9))
+        binder = IdentityBinder(rid, fps=10.0, fresh=3, reconsider_every=1, recent_views=3)
+        old = mem.remember("person", [e[3].copy() for _ in range(4)], 0.0, 1.0, 4)
+        weak = [(np.sqrt(0.5) * e[3] + np.sqrt(0.5) * e[4]).astype(np.float32)] * 2
+        holder = _live_track(1, weak)
+        binder.step([holder], 20)
+        provisional = binder.identity_of(1)
+        assert provisional not in (None, old)
+        holder = _live_track(1, [e[3].copy() for _ in range(4)])
+        newcomer = _live_track(2, [e[3].copy() for _ in range(3)])
+        events = binder.step([holder, newcomer], 30)
+        assert events.reclaimed == 1 and binder.identity_of(1) == old
+        assert binder.identity_of(2) != old, "the merged-into identity must be guarded this frame"

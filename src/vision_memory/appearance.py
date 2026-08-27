@@ -85,7 +85,12 @@ class ReidNet:
         # are padded and the padding discarded.
         self._batch = spec.shape[0] if isinstance(spec.shape[0], int) else 0
         self._h, self._w = int(spec.shape[2]), int(spec.shape[3])
-        self.dim = int(self._session.get_outputs()[0].shape[-1])
+        # Some exports leave the feature as (N, C, 1, 1). The width is the
+        # product of everything after the batch axis, and the output is
+        # flattened to match, so dim and the vectors agree.
+        out_shape = self._session.get_outputs()[0].shape[1:]
+        self.dim = int(np.prod([int(d) for d in out_shape])) if all(
+            isinstance(d, int) for d in out_shape) else int(out_shape[0])
 
     def encode_batch(self, crops_rgb: Sequence[np.ndarray]) -> np.ndarray:
         """Embed RGB crops into unit-norm vectors, shape ``(N, dim)``."""
@@ -99,8 +104,10 @@ class ReidNet:
                 padded = np.zeros((self._batch, 3, self._h, self._w), np.float32)
                 padded[: len(chunk)] = chunk
                 got = self._session.run(None, {self._input: padded})[0][: len(chunk)]
+                got = np.asarray(got).reshape(len(chunk), -1)
             else:
                 got = self._session.run(None, {self._input: chunk})[0]
+                got = np.asarray(got).reshape(len(chunk), -1)
             out.append(np.asarray(got, dtype=np.float32))
         if not out:
             return np.empty((0, self.dim), np.float32)
@@ -264,9 +271,11 @@ def describe_detections(
     """
     if not detections:
         return {}
-    return describer.describe(
-        frame_bgr, [d.box for d in detections], [d.label for d in detections]
-    )
+    boxes = [d.box for d in detections]
+    if isinstance(describer, RoutedDescriber):
+        return describer.describe(frame_bgr, boxes, [d.label for d in detections])
+    # A plain describer uses one model for everything and takes no labels.
+    return describer.describe(frame_bgr, boxes)
 
 
 def _unit(v: np.ndarray) -> np.ndarray:

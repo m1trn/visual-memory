@@ -104,6 +104,15 @@ class Track:
     # Crops are never written to disk, so these L2-normalized observations are
     # everything a dying track can hand to persistent memory.
     exemplars: list[np.ndarray] = field(default_factory=list)
+    # The last few raw observations in ORDER. The exemplar buffer is kept
+    # diverse by evicting whichever survivor most resembles a newcomer, so
+    # its tail is not the latest views once it is full; anything that asks
+    # what the object looks like now must read this instead.
+    recent: list[np.ndarray] = field(default_factory=list)
+    # Where the track began, for the continuity prior: an object that
+    # reappears where another vanished is judged on where it reappeared,
+    # not on where it has walked to since.
+    first_box: np.ndarray | None = None
     _kf: KalmanBox = field(repr=False, compare=False, default=None)  # type: ignore[assignment]
 
 
@@ -336,12 +345,14 @@ class ByteTracker:
             t
             for t in self._tracks
             if t.time_since_update == 0 and should_embed(t.hits, self.cfg.embed_every_n)
-        ]
+                and t.score >= self.cfg.min_exemplar_confidence]
 
     def add_embedding(self, track: Track, embedding: np.ndarray) -> None:
         """Record an observed embedding for ``track`` (running mean + exemplar buffer)."""
         emb = _normalize(np.asarray(embedding, dtype=np.float32))
         track.embedding = _normalize(emb if track.embedding is None else (track.embedding + emb) / 2.0)
+        track.recent.append(emb)
+        del track.recent[: max(len(track.recent) - max(self.cfg.veto_views, 1), 0)]
         self._push_exemplar(track, emb)
 
     def _push_exemplar(self, track: Track, emb: np.ndarray) -> None:
@@ -389,7 +400,7 @@ class ByteTracker:
         # Recent raw observations, falling back to the running mean before any
         # have been recorded.
         track_embs = [
-            (t.exemplars[-self.cfg.veto_views:] if t.exemplars else t.embedding)
+            (t.recent if t.recent else t.embedding)
             for t in (self._tracks[i] for i in track_idx)
         ]
         det_embs = [embeddings.get(i) for i in det_idx]
@@ -474,6 +485,7 @@ class ByteTracker:
             peak_score=float(det.score),
             class_id=det.class_id,
             label=det.label,
+            first_box=box.copy(),
             hits=1,
             time_since_update=0,
             state="tentative",

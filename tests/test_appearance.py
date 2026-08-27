@@ -125,3 +125,30 @@ def test_routing_preserves_within_kind_similarity() -> None:
     box = np.array([10.0, 10.0, 60.0, 150.0])
     out = d.describe(frame, [box, box], ["person", "person"])
     assert float(out[0] @ out[1]) == pytest.approx(1.0, abs=1e-4)
+
+
+def test_describe_detections_dispatches_on_the_describer_kind() -> None:
+    """Audit finding: a plain describer takes no labels, so model: encoder crashed."""
+    from vision_memory.appearance import RoutedDescriber, describe_detections
+
+    class Det:
+        def __init__(self):
+            self.box = np.array([0.0, 0.0, 10.0, 20.0]); self.label = "person"; self.score = 0.9
+
+    calls = []
+
+    class Plain:
+        dim = 4
+        def describe(self, frame, boxes):
+            calls.append(("plain", len(boxes))); return {0: np.zeros(4, np.float32)}
+
+    class Routed(RoutedDescriber):
+        dim = 4
+        def __init__(self): pass
+        def describe(self, frame, boxes, labels):
+            calls.append(("routed", len(boxes), tuple(labels))); return {0: np.zeros(4, np.float32)}
+
+    frame = np.zeros((40, 40, 3), np.uint8)
+    assert 0 in describe_detections(Plain(), frame, [Det()])
+    assert 0 in describe_detections(Routed(), frame, [Det()])
+    assert calls == [("plain", 1), ("routed", 1, ("person",))]

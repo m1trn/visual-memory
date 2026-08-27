@@ -106,6 +106,10 @@ class VisualMemory:
             self._reconcile()
         else:
             self._index = VectorIndex(dim)
+            # A database beside a MISSING index file is the same disagreement
+            # as a stale one: its exemplar rows point at vectors that do not
+            # exist, and anything reconstructing them would crash.
+            self._reconcile()
 
     def __enter__(self) -> "VisualMemory":
         return self
@@ -259,6 +263,8 @@ class VisualMemory:
 
     def search(self, embedding: np.ndarray, k: int = 5) -> list[tuple[int, float]]:
         """Top-``k`` identities by best-matching exemplar, best cosine first."""
+        if k <= 0:
+            raise ValueError(f"k must be positive, got {k}")
         if len(self._index) == 0:
             return []
         # Over-fetch: one identity can occupy several index slots. The widest

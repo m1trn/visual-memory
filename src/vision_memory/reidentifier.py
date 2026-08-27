@@ -85,6 +85,7 @@ class ReIdentifier:
         box: np.ndarray | None = None,
         unavailable: frozenset[int] | set[int] | None = None,
         held_by_others: dict[int, float] | None = None,
+        origin_box: np.ndarray | None = None,
     ) -> Resolution:
         """Bind these observations into the best matching identity, or create one.
 
@@ -119,8 +120,12 @@ class ReIdentifier:
             return Resolution(identity_id=identity_id, score=taken_score, is_new=False)
 
         required = self.threshold
-        if best_id is not None and box is not None:
-            required -= self.cfg.continuity_bonus * self._continuity(best_id, first_seen, box)
+        # Continuity asks where the object REAPPEARED, at the time it did:
+        # the origin box with first_seen. The current box is where it has
+        # walked to since, which says nothing about who it is.
+        where = box if origin_box is None else origin_box
+        if best_id is not None and where is not None:
+            required -= self.cfg.continuity_bonus * self._continuity(best_id, first_seen, where)
 
         if best_id is not None and best_score >= required:
             identity_id = self.memory.remember(
@@ -143,6 +148,7 @@ class ReIdentifier:
         appearances: int = 0,
         box: np.ndarray | None = None,
         unavailable: frozenset[int] | set[int] | None = None,
+        origin_box: np.ndarray | None = None,
     ) -> Resolution | None:
         """Revisit a binding now that the track has more to say for itself.
 
@@ -164,8 +170,9 @@ class ReIdentifier:
         if best_id is None:
             return None
         required = self.threshold
-        if box is not None:
-            required -= self.cfg.continuity_bonus * self._continuity(best_id, first_seen, box)
+        where = box if origin_box is None else origin_box
+        if where is not None:
+            required -= self.cfg.continuity_bonus * self._continuity(best_id, first_seen, where)
         # Merging rewrites history, so demand clearly more than a fresh
         # binding — but never more than evidence can supply: cosine tops out at
         # 1.0, so an uncapped bar above ~0.98 would refuse even a byte-identical
@@ -439,11 +446,32 @@ class IdentityBinder:
         # real detection went to a new track; re-identifying it would give a
         # phantom box a fresh number. It stays dormant until actually seen.
         self._dormant: set[int] = set()
+        # How many of a track's hits memory has already been told about, so a
+        # track's death does not count them a second time.
+        self.folded_hits: dict[int, int] = {}
         self.first_frame: dict[int, int] = {}
 
     def identity_of(self, track_id: int) -> int | None:
         res = self.bound.get(track_id)
         return None if res is None else res.identity_id
+
+    def _holdings(self, active: Sequence) -> dict[int, float]:
+        """What each visible object holds, and how well it fits that record NOW.
+
+        A holder's claim is his live fit and nothing else. The score he was
+        bound with is history: the track that created an identity holds it at
+        -inf, a track that re-bound at 0.9 and then slid onto another body
+        still carries that 0.9. Neither says whether he looks like the record
+        today. Only when a track has no views at all is the binding score used.
+        """
+        held: dict[int, float] = {}
+        for t in active:
+            res = self.bound.get(t.id)
+            if res is None or t.time_since_update > self.fresh:
+                continue
+            fit = self._current_fit(res.identity_id, t)
+            held[res.identity_id] = res.score if fit is None else fit
+        return held
 
     def step(self, active: Sequence, frame_idx: int) -> BindingEvents:
         """Bind, revisit and record whereabouts for every live track this frame."""
@@ -452,21 +480,8 @@ class IdentityBinder:
         for track in active:
             self.first_frame.setdefault(track.id, frame_idx)
 
-        # What each visible object holds, and how well it fits that record NOW.
-        # The score it was bound with is the wrong yardstick: the track that
-        # created an identity holds it at -inf, so any newcomer clearing the
-        # threshold could take a 13-hit person's number the moment he was
-        # occluded. A challenger must beat the holder's actual fit.
-        held_by_others: dict[int, float] = {}
-        for t in active:
-            res = self.bound.get(t.id)
-            if res is None or t.time_since_update > self.fresh:
-                continue
-            fit = self._current_fit(res.identity_id, t)
-            held_by_others[res.identity_id] = res.score if fit is None else max(fit, res.score)
-        in_use = set(held_by_others)
-
         if frame_idx % self.reconsider_every == 0:
+            in_use = set(self._holdings(active))
             for track in active:
                 held = self.bound.get(track.id)
                 if held is None or not len(track.exemplars):
@@ -475,17 +490,27 @@ class IdentityBinder:
                     held.identity_id, track.label, track.exemplars,
                     self.first_frame[track.id] / fps, frame_idx / fps, track.hits,
                     box=track.box, unavailable=in_use - {held.identity_id},
+                    origin_box=track.first_box,
                 )
                 if revised is not None:
                     for other, res in list(self.bound.items()):
                         if res.identity_id == held.identity_id:
                             self.bound[other] = revised
+                    self.folded_hits[track.id] = track.hits
                     events.reclaimed += 1
             events.swapped += self._swap_crossed_numbers(active)
 
-        # Identities bound earlier in THIS frame, at the score they were won
-        # with. Rebuilt from live bindings only: a dead track's entry must not
-        # count, which is why the whole of `bound` is never used here.
+        # Rebuilt AFTER the merges and swaps above: an identity a live track
+        # gained through them this frame must be unavailable, and guarded at
+        # its holder's fit, before any newcomer is resolved.
+        held_by_others = self._holdings(active)
+        in_use = set(held_by_others)
+
+        # Identities bound earlier in THIS frame, guarded at the holder's own
+        # fit. A creator's Resolution.score is the score against the best
+        # REJECTED candidate, or -inf on an empty memory; using that would let
+        # a same-frame newcomer take the number by merely clearing the
+        # threshold. Live bindings only: a dead track's entry must not count.
         taken_now: dict[int, float] = {}
         for track in active:
             if track.id in self.bound or len(track.exemplars) < self.min_evidence:
@@ -502,6 +527,7 @@ class IdentityBinder:
                 frame_idx / fps, track.hits, box=track.box,
                 unavailable=in_use | set(taken_now),
                 held_by_others={**held_by_others, **taken_now},
+                origin_box=track.first_box,
             )
             if res.is_new and track.peak_score < self.min_new_identity_confidence:
                 # Not convincing enough to be a new person. The record just
@@ -524,7 +550,9 @@ class IdentityBinder:
                     if other.time_since_update > 0 or other.score < self.convincing_confidence:
                         self._dormant.add(other.id)
             self.bound[track.id] = res
-            taken_now[res.identity_id] = res.score
+            self.folded_hits[track.id] = track.hits
+            own = self._current_fit(res.identity_id, track)
+            taken_now[res.identity_id] = res.score if own is None else own
             if res.is_new:
                 events.created += 1
             else:
@@ -579,15 +607,26 @@ class IdentityBinder:
         return swaps
 
     def _current_fit(self, identity_id: int, track) -> float | None:
-        """How well the track's latest views fit a record."""
-        views = track.exemplars[-self.recent_views:] if len(track.exemplars) else []
-        return self.reid.score_against(identity_id, views) if len(views) else None
+        """How well the track's latest views fit a record.
 
-    def forget(self, track_id: int) -> tuple[Resolution | None, int | None]:
+        Reads ``track.recent`` - the last observations in order. The exemplar
+        buffer is deliberately not chronological: it evicts whichever survivor
+        most resembles a newcomer, so its tail is a diverse sample of the whole
+        track, not its present. Falls back to the buffer only for a track that
+        has no recent list at all (older callers).
+        """
+        views = list(getattr(track, "recent", []) or [])[-self.recent_views:]
+        if not views and len(track.exemplars):
+            views = list(track.exemplars[-self.recent_views:])
+        return self.reid.score_against(identity_id, views) if views else None
+
+    def forget(self, track_id: int) -> tuple[Resolution | None, int | None, int]:
         """Release a dead track's binding and return what it held.
 
-        Returns ``(resolution, first_frame)`` so the caller can fold the track's
-        final observations into the identity it wore.
+        Returns ``(resolution, first_frame, hits_already_folded)`` so the
+        caller can fold the track's final observations into the identity it
+        wore without counting the hits memory was already told about.
         """
         self._dormant.discard(track_id)
-        return self.bound.pop(track_id, None), self.first_frame.pop(track_id, None)
+        return (self.bound.pop(track_id, None), self.first_frame.pop(track_id, None),
+                self.folded_hits.pop(track_id, 0))

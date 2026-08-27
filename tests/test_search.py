@@ -37,3 +37,12 @@ def test_remove_and_roundtrip(tmp_path) -> None:
     assert np.allclose(idx2.get(3), v[2])
     with pytest.raises(ValueError):
         idx2.add(unit(1, 5), ids=[9])
+
+
+def test_a_short_result_is_padded_with_minus_inf_like_the_empty_case() -> None:
+    from vision_memory.search import VectorIndex
+    idx = VectorIndex(4)
+    idx.add(np.eye(4, dtype=np.float32)[:2], [10, 11])
+    scores, ids = idx.search(np.eye(4, dtype=np.float32)[0], k=5)
+    assert list(ids[0][:2]) == [10, 11] and (ids[0][2:] == -1).all()
+    assert np.isneginf(scores[0][2:]).all()

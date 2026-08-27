@@ -42,7 +42,7 @@ def main() -> None:
 
     scores, ids = index.search(embs, k=args.k + 1)  # +1: first hit is the query itself
     for qi, name in enumerate(names):
-        hits = [(names[i], s) for s, i in zip(scores[qi], ids[qi]) if i != qi][: args.k]
+        hits = [(names[i], s) for s, i in zip(scores[qi], ids[qi]) if i >= 0 and i != qi][: args.k]
         print(f"{name:>12} -> " + ", ".join(f"{n} {s:.2f}" for n, s in hits))
 
 
