@@ -416,7 +416,7 @@ class IdentityBinder:
     def __init__(self, reid: ReIdentifier, fps: float, fresh: int,
                  reconsider_every: int, min_evidence: int = 2,
                  swap_margin: float = 0.0, min_new_identity_confidence: float = 0.0,
-                 convincing_confidence: float = 0.0) -> None:
+                 convincing_confidence: float = 0.0, recent_views: int = 3) -> None:
         self.reid = reid
         self.fps = fps
         self.fresh = fresh
@@ -428,6 +428,11 @@ class IdentityBinder:
         # came from the tracker's low-confidence second pass and says nothing
         # about whether a person is there. The tracker's own high_conf.
         self.convincing_confidence = convincing_confidence
+        # How many of a track's latest views say what it looks like NOW. A
+        # track that has slid onto another body still carries its old crops,
+        # and against its own record those score perfectly; the question a
+        # takeover or a swap asks is about the present, not the history.
+        self.recent_views = recent_views
         self.bound: dict[int, Resolution] = {}
         # Tracks whose identity was taken while they were unseen. Such a track
         # is the same object's ghost, coasting on a stale prediction while the
@@ -457,7 +462,7 @@ class IdentityBinder:
             res = self.bound.get(t.id)
             if res is None or t.time_since_update > self.fresh:
                 continue
-            fit = self.reid.score_against(res.identity_id, t.exemplars) if len(t.exemplars) else None
+            fit = self._current_fit(res.identity_id, t)
             held_by_others[res.identity_id] = res.score if fit is None else max(fit, res.score)
         in_use = set(held_by_others)
 
@@ -508,6 +513,11 @@ class IdentityBinder:
                 if other.id != track.id and self.identity_of(other.id) == res.identity_id:
                     del self.bound[other.id]
                     events.taken += 1
+                    # Whatever this track was, it is not that any more. Its old
+                    # lifetime would make it co-alive with the identity it may
+                    # actually belong to now - a track that slid from one body
+                    # to another spans both - so from here it is a new object.
+                    self.first_frame[other.id] = frame_idx
                     # The loser is a ghost unless it was seen convincingly this
                     # very frame: a coasting box, or one held alive by a weak
                     # second-pass detection, is the same object's stale copy.
@@ -542,7 +552,7 @@ class IdentityBinder:
         live = [t for t in active if t.id in self.bound and len(t.exemplars)
                 and t.time_since_update <= self.fresh]
         own: dict[int, float | None] = {
-            t.id: self.reid.score_against(self.bound[t.id].identity_id, t.exemplars) for t in live
+            t.id: self._current_fit(self.bound[t.id].identity_id, t) for t in live
         }
         swaps = 0
         done: set[int] = set()
@@ -553,8 +563,8 @@ class IdentityBinder:
                 if b.id in done or own[b.id] is None or a.label != b.label:
                     continue
                 ida, idb = self.bound[a.id].identity_id, self.bound[b.id].identity_id
-                a_on_b = self.reid.score_against(idb, a.exemplars)
-                b_on_a = self.reid.score_against(ida, b.exemplars)
+                a_on_b = self._current_fit(idb, a)
+                b_on_a = self._current_fit(ida, b)
                 if a_on_b is None or b_on_a is None:
                     continue
                 bar = self.reid.threshold
@@ -567,6 +577,11 @@ class IdentityBinder:
                     swaps += 1
                     break
         return swaps
+
+    def _current_fit(self, identity_id: int, track) -> float | None:
+        """How well the track's latest views fit a record."""
+        views = track.exemplars[-self.recent_views:] if len(track.exemplars) else []
+        return self.reid.score_against(identity_id, views) if len(views) else None
 
     def forget(self, track_id: int) -> tuple[Resolution | None, int | None]:
         """Release a dead track's binding and return what it held.

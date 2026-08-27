@@ -149,7 +149,8 @@ def main() -> None:
         binder = IdentityBinder(reid, fps, fresh, reid_cfg.reconsider_every, _MIN_EVIDENCE,
                                 swap_margin=reid_cfg.swap_margin,
                                 min_new_identity_confidence=reid_cfg.min_new_identity_confidence,
-                                convincing_confidence=tracker_cfg.high_conf)
+                                convincing_confidence=tracker_cfg.high_conf,
+                                recent_views=tracker_cfg.veto_views)
         while frame_idx < args.max_frames:
             ok, frame = cap.read()
             if not ok:

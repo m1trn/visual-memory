@@ -104,7 +104,8 @@ def run(frames: list, sequence: Sequence, threshold: float | None, dim: int):
         binder = IdentityBinder(reid, sequence.fps, fresh, rc.reconsider_every, _MIN_EVIDENCE,
                                 swap_margin=rc.swap_margin,
                                 min_new_identity_confidence=rc.min_new_identity_confidence,
-                                convincing_confidence=tracker_cfg.high_conf)
+                                convincing_confidence=tracker_cfg.high_conf,
+                                recent_views=tracker_cfg.veto_views)
         for number, detections, embeddings in frames:
             active = tracker.update(detections, embeddings)
             if threshold is not None:

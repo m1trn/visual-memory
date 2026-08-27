@@ -539,3 +539,37 @@ def test_a_newcomer_cannot_take_a_number_from_a_holder_who_still_fits_it(tmp_pat
         rightful = _live_track(3, cluster(e[2], 3, seed=73))
         events = binder.step([drifted, rightful], 20)
         assert events.taken == 1 and binder.identity_of(3) == ident
+
+
+def test_a_track_that_slid_onto_another_body_loses_the_number_and_finds_its_own(tmp_path) -> None:
+    """Fit is judged on recent views, and a displaced track is a new object from then.
+
+    Two people cross. Track 1, wearing Alice's number, slides onto Bob's body;
+    its buffer still holds Alice crops, which score perfectly against Alice's
+    record - so judged on history it keeps her number for good. Judged on its
+    latest views it does not look like Alice, so Alice's new track takes her
+    number back. Track 1 is then free to be Bob, even though its old lifetime
+    overlapped Bob's record.
+    """
+    from vision_memory.reidentifier import IdentityBinder
+    e = np.eye(DIM, dtype=np.float32)
+    with VisualMemory(cfg(tmp_path), DIM) as mem:
+        rid = ReIdentifier(mem, FakeVerifier(0.6))
+        binder = IdentityBinder(rid, fps=10.0, fresh=3, reconsider_every=1000, recent_views=3)
+        alice = _live_track(1, cluster(e[1], 4, seed=81))
+        bob = _live_track(2, cluster(e[5], 4, seed=82))
+        binder.step([alice, bob], 0)
+        a_id, b_id = binder.identity_of(1), binder.identity_of(2)
+
+        # Bob's track dies (occluded); track 1 slides onto Bob's body - its
+        # buffer is Alice history followed by Bob views.
+        binder.forget(2)
+        slid = _live_track(1, list(cluster(e[1], 4, seed=81)) + list(cluster(e[5], 3, seed=83)))
+        # Alice reappears on a fresh track.
+        alice_again = _live_track(3, cluster(e[1], 3, seed=84))
+        events = binder.step([slid, alice_again], 30)
+        assert events.taken == 1 and binder.identity_of(3) == a_id
+
+        # Next frame the displaced track is judged afresh and gets Bob back.
+        events = binder.step([slid, alice_again], 31)
+        assert binder.identity_of(1) == b_id and events.rebound == 1
