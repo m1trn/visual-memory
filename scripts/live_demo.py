@@ -61,6 +61,71 @@ class LatestFrame:
             return (None if self._frame is None else self._frame.copy()), self.index
 
 
+class BoxFollower:
+    """Move each box with the pixels inside it between pipeline passes.
+
+    The tracker's velocity projection guesses; this looks. A few feature
+    points are picked inside every box when a pass lands, then followed frame
+    to frame with Lucas-Kanade optical flow (core OpenCV, ~1 ms per box). The
+    box moves by the median displacement of its points, so a stray point on
+    the background cannot drag it. Each new pass re-anchors everything.
+    """
+
+    _LK = dict(winSize=(21, 21), maxLevel=3,
+               criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 20, 0.03))
+
+    def __init__(self) -> None:
+        self._grey: np.ndarray | None = None
+        self._points: dict[int, np.ndarray] = {}
+        self._offset: dict[int, np.ndarray] = {}
+        self._anchor: int = -1
+
+    def anchor(self, frame_bgr: np.ndarray, views: list[TrackView], pass_idx: int) -> None:
+        """A pass landed: pick fresh points inside every box on this frame."""
+        if pass_idx == self._anchor:
+            return
+        self._anchor = pass_idx
+        self._grey = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+        self._points, self._offset = {}, {}
+        h, w = self._grey.shape
+        for v in views:
+            x1, y1, x2, y2 = (int(c) for c in v.box)
+            x1, y1, x2, y2 = max(x1, 0), max(y1, 0), min(x2, w), min(y2, h)
+            if x2 - x1 < 8 or y2 - y1 < 8:
+                continue
+            mask = np.zeros_like(self._grey)
+            # inner two thirds of the box: feature points on the object, not its edge
+            mx, my = (x2 - x1) // 6, (y2 - y1) // 6
+            mask[y1 + my:y2 - my, x1 + mx:x2 - mx] = 255
+            pts = cv2.goodFeaturesToTrack(self._grey, maxCorners=24, qualityLevel=0.01, minDistance=4, mask=mask)
+            if pts is not None and len(pts) >= 4:
+                self._points[v.track_id] = pts
+                self._offset[v.track_id] = np.zeros(2, np.float32)
+
+    def follow(self, frame_bgr: np.ndarray, views: list[TrackView]) -> list[TrackView]:
+        """Advance every anchored box by where its points went in this frame."""
+        if self._grey is None or not self._points:
+            return views
+        grey = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+        out = []
+        for v in views:
+            pts = self._points.get(v.track_id)
+            if pts is None:
+                out.append(v)
+                continue
+            nxt, ok, _ = cv2.calcOpticalFlowPyrLK(self._grey, grey, pts, None, **self._LK)
+            good = ok.ravel() == 1
+            if good.sum() >= 4:
+                shift = np.median((nxt[good] - pts[good]).reshape(-1, 2), axis=0)
+                self._points[v.track_id] = nxt[good]
+                self._offset[v.track_id] = self._offset[v.track_id] + shift.astype(np.float32)
+            dx, dy = self._offset[v.track_id]
+            out.append(TrackView(v.track_id, v.box + np.array([dx, dy, dx, dy], np.float32), v.label,
+                                 v.identity_id, v.is_new, v.score, v.hidden, v.anomaly))
+        self._grey = grey
+        return out
+
+
 def _capture(source, mailbox: LatestFrame, pace_fps: float | None) -> None:
     """Read frames into the mailbox. A file is paced to its own frame rate."""
     cap = cv2.VideoCapture(source)
@@ -95,6 +160,7 @@ def _worker(engine: VisionEngine, mailbox: LatestFrame, stats: dict) -> None:
             return
         stats["pipeline_ms"] = (time.perf_counter() - t) * 1000
         stats["skipped"] = idx - done - 1 if done >= 0 else 0
+        stats["anchor"] = (idx, frame)      # the display re-anchors its followers on this frame
         done = idx
 
 
@@ -154,6 +220,9 @@ def main() -> None:
     ap.add_argument("--db", type=Path, default=Path("data/live.db"))
     ap.add_argument("--index", type=Path, default=Path("data/live.faiss"))
     ap.add_argument("--max-frames", type=int, default=None)
+    ap.add_argument("--between", choices=("follow", "predict", "hold"), default="follow",
+                    help="how boxes move between pipeline passes: follow the pixels (optical flow), "
+                         "predict from the tracker's velocity, or hold still")
     args = ap.parse_args()
     source = int(args.source) if args.source.isdigit() else args.source
 
@@ -195,6 +264,7 @@ def main() -> None:
     shown = 0
     t0 = time.perf_counter()
     last_idx = -1
+    follower = BoxFollower()
     try:
         while not mailbox.closed:
             frame, idx = mailbox.get()
@@ -202,7 +272,16 @@ def main() -> None:
                 time.sleep(0.002)
                 continue
             last_idx = idx
-            views = engine.view(idx)
+            if args.between == "hold":
+                views = engine.view(engine._last_frame_idx if engine._last_frame_idx >= 0 else idx)
+            elif args.between == "predict":
+                views = engine.view(idx)
+            else:
+                anchor = stats.get("anchor")
+                base = engine.view(engine._last_frame_idx if engine._last_frame_idx >= 0 else idx)
+                if anchor is not None:
+                    follower.anchor(anchor[1], base, anchor[0])
+                views = follower.follow(frame, base)
 
             if state["click"] is not None:
                 cx, cy = state["click"]; state["click"] = None
