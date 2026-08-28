@@ -64,6 +64,20 @@ class KalmanBox:
         self._R = np.eye(4, dtype=np.float64) * measurement_noise
         self._R[2:, 2:] *= 10.0  # width/height measurements are noisier than centers
 
+    def peek(self, steps: int) -> np.ndarray:
+        """Where the box would be ``steps`` frames from now, without moving it.
+
+        The live display runs at camera rate while the pipeline processes a
+        frame every few hundred milliseconds. Between updates the display asks
+        where each box is *expected* to be and draws that; the filter's real
+        state is only advanced by ``predict`` when a processed frame arrives.
+        """
+        x = self.x.copy()
+        for _ in range(max(int(steps), 0)):
+            x = self._F @ x
+        x[2:4] = np.maximum(x[2:4], _MIN_BOX_SIDE)
+        return _cxcywh_to_xyxy(x[:4])
+
     def predict(self) -> np.ndarray:
         """Advance the state by one frame and return the predicted xyxy box."""
         self.x = self._F @ self.x
@@ -327,6 +341,24 @@ class ByteTracker:
             return
         self._newly_lost.extend(t for t in self._tracks if t.state == "lost")
         self._tracks = [t for t in self._tracks if t.state not in ("lost", "dead")]
+
+    def advance(self, steps: int) -> None:
+        """Move every track ``steps`` frames along its motion without ageing it.
+
+        For a live loop that could not look at ``steps`` camera frames: the
+        objects kept moving, so the filters follow them, but nobody missed a
+        detection - there was none to miss. Ageing here would let a pipeline
+        slower than ``max_age`` camera frames kill every track between passes,
+        which under load is all of them. ``max_age`` therefore counts frames the
+        pipeline actually looked at.
+        """
+        for _ in range(max(int(steps), 0)):
+            for t in self._tracks:
+                t.box = t._kf.predict()
+
+    def peek(self, steps: int) -> list[tuple[Track, np.ndarray]]:
+        """Active tracks with their boxes projected ``steps`` frames ahead, state untouched."""
+        return [(t, t._kf.peek(steps)) for t in self._tracks if t.state == "active"]
 
     def pop_lost(self) -> list[Track]:
         """Return tracks that became lost since the last call, then clear them."""

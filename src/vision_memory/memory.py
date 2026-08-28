@@ -95,7 +95,7 @@ class VisualMemory:
         self._db_path = Path(cfg.db_path)
         self._index_path = Path(cfg.index_path)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._db = sqlite3.connect(self._db_path)
+        self._db = sqlite3.connect(self._db_path, check_same_thread=False)  # serialised by the live engine lock
         self._db.execute("PRAGMA foreign_keys = ON")
         self._db.executescript(_SCHEMA)
         self._db.commit()

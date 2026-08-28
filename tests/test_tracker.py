@@ -337,3 +337,18 @@ def test_embeddings_of_weak_detections_are_never_consumed() -> None:
         return log
 
     assert run(True) == run(False)
+
+
+def test_peek_projects_without_moving_the_track() -> None:
+    """The live display reads projections; only processed frames advance state."""
+    cfg = _cfg(min_hits=1)
+    tracker = ByteTracker(cfg)
+    for k in range(4):  # a box moving 5 px per frame
+        (track,) = tracker.update([Detection(np.array([0.0, 0.0, 10.0, 20.0]) + 5 * k, 0.9, 0, "person")])
+    before = track.box.copy()
+    (t, ahead) = tracker.peek(3)[0]
+    assert t is track
+    assert ahead[0] > before[0] + 5, "projection must move with the estimated velocity"
+    assert np.allclose(track.box, before), "peek must not advance the filter"
+    (t0, now) = tracker.peek(0)[0]
+    assert np.allclose(now, before, atol=1e-4)
