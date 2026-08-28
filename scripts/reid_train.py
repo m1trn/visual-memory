@@ -66,8 +66,13 @@ def detection_cache(name: str) -> list:
     video_cfg, tracker_cfg = load_video_config(), load_tracker_config()
     det = YoloOnnxDetector(load_detector_config())
     desc = build_describer(load_appearance_config())
-    frames = []
+    # Checkpointed: a killed build resumes from its last hundred frames.
+    part = path.with_suffix(".part")
+    frames = pickle.loads(part.read_bytes()) if part.exists() else []
+    done = frames[-1][0] if frames else 0
     for number, frame in seq.frames():
+        if number <= done:
+            continue
         if (number - 1) % video_cfg.detect_every_n_frames == 0:
             ds = det.detect(frame)
             emb = describe_detections(desc, frame, ds, tracker_cfg.min_exemplar_confidence)
@@ -75,8 +80,10 @@ def detection_cache(name: str) -> list:
             ds, emb = None, None
         frames.append((number, ds, emb))
         if number % 100 == 0:
+            part.write_bytes(pickle.dumps(frames))
             print(f"  {number}/{seq.length}", flush=True)
     path.write_bytes(pickle.dumps(frames))
+    part.unlink(missing_ok=True)
     return frames
 
 
