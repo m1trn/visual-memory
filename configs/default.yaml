@@ -191,7 +191,16 @@ appearance:
   model: reid             # reid | encoder. A network trained to tell people apart beats a general
                           # encoder at this job and is far smaller: measured across a 3 s gap, recall
                           # at 5% false accepts rises 62.1% -> 83.7% and cost falls ~120 -> 11 ms/crop.
-  reid_model_path: data/models/osnet_x0_25_msmt17.onnx
+  reid_model_path: data/models/person_reid_youtu_2021nov.onnx  # Tencent YouTu person re-id (OpenCV Zoo, 107 MB,
+                          # 768-dim, ~2x the cost of OSNet x0.25 per crop; embedding runs off the
+                          # hot path). Chosen on labelled returns: held-out MOT17-09 IDF1 66.6% -> 81.3%
+                          # and switches 19 -> 9 against OSNet x0.25 at each model's own calibrated
+                          # boundary; MOT17-02 46.4% -> 53.6%, switches 29 -> 10. The tracker's own
+                          # association also improves (held-out floor 58.5% -> 65.1%) because the
+                          # appearance veto sees the same vectors. Its scores sit on a different scale
+                          # (boundary 0.593, not 0.755) - the calibration is re-fitted from
+                          # data/reid_pairs.pkl by reid_bench.py, which must be re-run after any swap.
+                          # OSNet x0.25 (data/models/osnet_x0_25_msmt17.onnx) remains selectable.
   specialist_labels: [person]  # classes the re-id network is trained for. It is much better than
                                # the general encoder on these and much worse on anything else, so
                                # everything not listed here keeps using the general encoder.

@@ -160,7 +160,7 @@ def main() -> None:
     accs.append(_score(sequence, by_tracker, args.max_frames))
     names.append("tracker only")
 
-    for threshold in (0.755,):
+    for threshold in (0.55, 0.593, 0.65):
         _, by_reid, count = run(frames, sequence, threshold, dim)
         accs.append(_score(sequence, by_reid, args.max_frames))
         names.append(f"re-id @ {threshold:.3f}")
