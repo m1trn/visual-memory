@@ -119,6 +119,37 @@ class ReidNet:
         return ((img - _IMAGENET_MEAN) / _IMAGENET_STD).transpose(2, 0, 1)
 
 
+class ProjectedEmbedder:
+    """A trained linear map on top of a frozen embedder: our own fingerprint.
+
+    The backbone stays frozen (a fixed decision: a mutable encoder invalidates
+    every stored embedding). What we train is one matrix after it, fitted on
+    human-labelled people so that cosine in the NEW space separates them
+    better, and smaller: 768 -> 128 makes every comparison, search and stored
+    record six times lighter. Outputs are re-normalised so cosine stays cosine.
+
+    Switching this on changes the vector, so memory starts empty - that is the
+    same class of decision as changing the backbone, and is why it is a config
+    file path rather than a default.
+    """
+
+    def __init__(self, base: Embedder, weights: np.ndarray) -> None:
+        w = np.asarray(weights, dtype=np.float32)
+        if w.ndim != 2 or w.shape[0] != base.dim:
+            raise ValueError(f"projection expects ({base.dim}, k), got {w.shape}")
+        self.base = base
+        self._w = np.ascontiguousarray(w)
+        self.dim = int(w.shape[1])
+
+    @classmethod
+    def load(cls, base: Embedder, path: str) -> "ProjectedEmbedder":
+        return cls(base, np.load(path)["w"])
+
+    def encode_batch(self, crops_rgb: Sequence[np.ndarray]) -> np.ndarray:
+        z = self.base.encode_batch(crops_rgb) @ self._w
+        return z / np.maximum(np.linalg.norm(z, axis=1, keepdims=True), 1e-12)
+
+
 class Embedder(Protocol):
     """Anything that turns RGB crops into unit-norm vectors."""
 
@@ -149,7 +180,10 @@ def build_embedder(cfg: AppearanceConfig) -> tuple[Embedder, float]:
     interferes least.
     """
     if cfg.model == "reid":
-        return ReidNet(cfg.reid_model_path), 1.0
+        net: Embedder = ReidNet(cfg.reid_model_path)
+        if cfg.projection_weights:
+            net = ProjectedEmbedder.load(net, cfg.projection_weights)
+        return net, 1.0
     if cfg.model == "encoder":
         from vision_memory.config import load_encoder_config
         return Encoder(load_encoder_config()), cfg.deep_upper_fraction

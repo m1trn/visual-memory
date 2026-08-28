@@ -216,6 +216,8 @@ appearance:
                           # (boundary 0.593, not 0.755) - the calibration is re-fitted from
                           # data/reid_pairs.pkl by reid_bench.py, which must be re-run after any swap.
                           # OSNet x0.25 (data/models/osnet_x0_25_msmt17.onnx) remains selectable.
+  projection_weights: ""    # path to a trained 768->k projection (scripts/reid_project.py); empty = off.
+                          # Changes the person vector, so memory starts empty when switched on.
   specialist_labels: [person]  # classes the re-id network is trained for. It is much better than
                                # the general encoder on these and much worse on anything else, so
                                # everything not listed here keeps using the general encoder.

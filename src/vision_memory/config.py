@@ -83,6 +83,7 @@ class ReidConfig:
 class AppearanceConfig:
     model: str
     reid_model_path: str
+    projection_weights: str
     specialist_labels: tuple[str, ...]
     colour_weight: float
     colour_bands: int
