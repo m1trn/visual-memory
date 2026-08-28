@@ -59,10 +59,14 @@ def train(rows, held_rows, dim_in, dim_out, K, quantile, rate, epochs, lr, tempe
     by = _by_person(rows)
     people = [k for k, rs in by.items() if len(rs) >= 4]
     embs = {k: torch.from_numpy(np.stack([r["embedding"] for r in by[k]])) for k in people}
-    w = torch.nn.Parameter(torch.eye(dim_in, dim_out) if dim_out <= dim_in else torch.randn(dim_in, dim_out) * 0.02)
-    # Start near the identity on the leading dims: a projection that begins as
-    # "keep the first k coordinates" already carries most of the backbone's
-    # separation, so the loss refines rather than rediscovers it.
+    # Start from PCA of the training vectors: the k directions that carry the
+    # most variance already hold most of the backbone's separation, so the loss
+    # refines a good space rather than rediscovering one. The untrained PCA
+    # projection is scored first, so what training adds is visible.
+    allx = np.concatenate([e.numpy() for e in embs.values()])
+    centred = allx - allx.mean(0, keepdims=True)
+    _, _, vt = np.linalg.svd(centred, full_matrices=False)
+    w = torch.nn.Parameter(torch.from_numpy(np.ascontiguousarray(vt[:dim_out].T.astype(np.float32))))
     opt = torch.optim.AdamW([w], lr=lr, weight_decay=1e-4)
     P, V = 24, 4  # people per batch, views per person
 
@@ -70,9 +74,11 @@ def train(rows, held_rows, dim_in, dim_out, K, quantile, rate, epochs, lr, tempe
         z = np.asarray(x, np.float32) @ w.detach().numpy()
         return z / np.maximum(np.linalg.norm(z, axis=1, keepdims=True), 1e-12)
 
-    best, best_w = -1.0, w.detach().clone()
     au0, rec0, n = evaluate(held_rows, K, quantile, rate, None)
     log(f"held-out raw cosine: AUROC {au0:.3f} recovered {rec0:.0%} (n={n})")
+    au_pca, rec_pca, _ = evaluate(held_rows, K, quantile, rate, project_np)
+    log(f"held-out PCA-{dim_out}, untrained: AUROC {au_pca:.3f} recovered {rec_pca:.0%}")
+    best, best_w = au_pca, w.detach().clone()
     steps = max(len(people) // P, 1) * 8
     for epoch in range(epochs):
         for _ in range(steps):
