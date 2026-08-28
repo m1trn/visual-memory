@@ -116,7 +116,8 @@ memory:
   reid_threshold: 0.80        # cosine, tune after Phase 7
 
 reid:
-  verifier: cosine        # cosine | logistic
+  verifier: cosine        # cosine | logistic | mlp (the project's own trained pair model)
+  verifier_weights: data/models/reid_verifier_mlp.npz  # produced by scripts/reid_train.py
   min_pair_gap: 2         # observations apart, so a positive pair is not two near-identical frames
   max_pairs_per_track: 200 # cap per track, or one long-lived object dominates the positive class
   max_false_merge_rate: 0.02 # share of provably-different pairs the binding boundary may accept.

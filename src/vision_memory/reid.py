@@ -357,6 +357,134 @@ class LogisticVerifier:
         return self.score(a, b) >= self.threshold
 
 
+class MlpVerifier:
+    """A small network trained on labelled pairs: "are these two the same person?"
+
+    The project's own trained component (SPEC section 20). The backbone stays
+    frozen; this sits on top of two of its vectors and learns what a single
+    cosine cannot: which dimensions carry identity, which differences are
+    lighting rather than clothing, that a 0.6 in one region of the space means
+    more than a 0.6 in another.
+
+    Input is the pair's symmetric summary ``[a*b, |a-b|, cos]`` restricted to
+    the person slice of the routed vector (the general slice is zero for
+    people and would only add parameters). Output is a probability; the
+    boundary used for binding is still fitted downstream on identity scores
+    (`identity_score_with`), so this scale needs no hand-set threshold.
+
+    Weights are numpy arrays saved to one ``.npz``; inference is two matrix
+    products, no torch at runtime.
+    """
+
+    def __init__(self, slice_dim: int, hidden: int = 128, seed: int = 0) -> None:
+        self.slice_dim = int(slice_dim)
+        self.hidden = int(hidden)
+        self.seed = int(seed)
+        self._w1: np.ndarray | None = None
+        self._b1: np.ndarray | None = None
+        self._w2: np.ndarray | None = None
+        self._b2: float = 0.0
+        self._threshold = 0.5
+
+    def features(self, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+        a = np.asarray(a, np.float32)[:, : self.slice_dim]
+        b = np.asarray(b, np.float32)[:, : self.slice_dim]
+        cos = (a * b).sum(1, keepdims=True)
+        return np.concatenate([a * b, np.abs(a - b), cos], axis=1)
+
+    @property
+    def n_features(self) -> int:
+        return 2 * self.slice_dim + 1
+
+    def fit(self, a: np.ndarray, b: np.ndarray, y: np.ndarray, *, epochs: int = 30,
+            lr: float = 1e-3, weight_decay: float = 1e-4, batch: int = 512,
+            validation: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
+            log: Callable[[str], None] | None = None) -> None:
+        """Fit on labelled pairs; keep the epoch that scores best on ``validation``."""
+        import torch
+
+        torch.manual_seed(self.seed)
+        x = torch.from_numpy(self.features(a, b))
+        t = torch.from_numpy(np.asarray(y, np.float32).ravel())
+        net = torch.nn.Sequential(
+            torch.nn.Linear(self.n_features, self.hidden), torch.nn.ReLU(),
+            torch.nn.Linear(self.hidden, 1),
+        )
+        opt = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=weight_decay)
+        pos_weight = torch.tensor([float(len(t) - t.sum()) / max(float(t.sum()), 1.0)])
+        loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+        best, best_state = -float("inf"), None
+        val = None
+        if validation is not None:
+            va, vb, vy = validation
+            val = (torch.from_numpy(self.features(va, vb)), np.asarray(vy).ravel().astype(bool))
+        g = torch.Generator().manual_seed(self.seed)
+        for epoch in range(epochs):
+            net.train()
+            for idx in torch.randperm(len(x), generator=g).split(batch):
+                opt.zero_grad()
+                loss_fn(net(x[idx]).squeeze(1), t[idx]).backward()
+                opt.step()
+            net.eval()
+            with torch.no_grad():
+                if val is None:
+                    score = -float(loss_fn(net(x).squeeze(1), t))
+                else:
+                    score = auroc(net(val[0]).squeeze(1).numpy(), val[1])
+            if log:
+                log(f"epoch {epoch + 1:>3}  {'val AUROC' if val else '-train loss'} {score:.4f}")
+            if score > best:
+                best = score
+                best_state = {k: v.detach().clone() for k, v in net.state_dict().items()}
+        net.load_state_dict(best_state)
+        self._w1 = net[0].weight.detach().numpy().T.astype(np.float32)
+        self._b1 = net[0].bias.detach().numpy().astype(np.float32)
+        self._w2 = net[2].weight.detach().numpy().ravel().astype(np.float32)
+        self._b2 = float(net[2].bias.detach().numpy()[0])
+
+    def score(self, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+        if self._w1 is None:
+            raise RuntimeError("MlpVerifier has no weights; fit() or load() first")
+        h = np.maximum(self.features(a, b) @ self._w1 + self._b1, 0.0)
+        logit = h @ self._w2 + self._b2
+        return (1.0 / (1.0 + np.exp(-logit))).astype(np.float32)
+
+    @property
+    def threshold(self) -> float:
+        return self._threshold
+
+    def predict(self, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+        return self.score(a, b) >= self._threshold
+
+    def save(self, path) -> None:
+        np.savez(path, w1=self._w1, b1=self._b1, w2=self._w2, b2=np.float32(self._b2),
+                 slice_dim=np.int64(self.slice_dim), hidden=np.int64(self.hidden))
+
+    @classmethod
+    def load(cls, path) -> "MlpVerifier":
+        z = np.load(path)
+        m = cls(int(z["slice_dim"]), int(z["hidden"]))
+        m._w1, m._b1, m._w2, m._b2 = z["w1"], z["b1"], z["w2"], float(z["b2"])
+        return m
+
+
+def auroc(scores: np.ndarray, positive: np.ndarray) -> float:
+    """Area under the ROC curve by rank; ties split evenly."""
+    s = np.asarray(scores, np.float64).ravel()
+    y = np.asarray(positive).ravel().astype(bool)
+    n_pos, n_neg = int(y.sum()), int((~y).sum())
+    if n_pos == 0 or n_neg == 0:
+        return float("nan")
+    order = np.argsort(s)
+    ranks = np.empty(len(s), np.float64)
+    ranks[order] = np.arange(1, len(s) + 1)
+    _, inv, counts = np.unique(s, return_inverse=True, return_counts=True)
+    sums = np.zeros(len(counts))
+    np.add.at(sums, inv, ranks)
+    ranks = sums[inv] / counts[inv]
+    return float((ranks[y].sum() - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg))
+
+
 def pair_features(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """Symmetric ``(N, 9)`` float32 summary of each embedding pair."""
     a, b = _as_pairs(a, b)
@@ -379,11 +507,18 @@ def pair_features(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 
 def build_verifier(cfg: ReidConfig) -> Verifier:
-    """Construct the verifier named by ``cfg.verifier`` ('cosine' or 'logistic')."""
+    """Construct the verifier named by ``cfg.verifier`` ('cosine', 'logistic' or 'mlp')."""
     if cfg.verifier == "cosine":
         return CosineVerifier()
     if cfg.verifier == "logistic":
         return LogisticVerifier(seed=cfg.seed)
+    if cfg.verifier == "mlp":
+        from pathlib import Path
+        if not Path(cfg.verifier_weights).exists():
+            raise FileNotFoundError(
+                f"reid.verifier is mlp but {cfg.verifier_weights} does not exist; "
+                "train it with scripts/reid_train.py")
+        return MlpVerifier.load(cfg.verifier_weights)
     raise ValueError(f"unknown reid verifier: {cfg.verifier!r}")
 
 

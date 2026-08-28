@@ -61,6 +61,7 @@ class MemoryConfig:
 @dataclass(frozen=True)
 class ReidConfig:
     verifier: str
+    verifier_weights: str
     min_pair_gap: int
     max_pairs_per_track: int
     observation_quantile: float
