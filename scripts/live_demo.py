@@ -38,6 +38,7 @@ from vision_memory.config import (  # noqa: E402
     load_reid_config, load_tracker_config, load_video_config,
 )
 from vision_memory.engine import TrackView, VisionEngine  # noqa: E402
+from vision_memory.segmenter import YoloSegmenter, outline  # noqa: E402
 
 MODES = {ord("1"): "memory", ord("2"): "search", ord("3"): "anomaly"}
 
@@ -164,15 +165,84 @@ def _worker(engine: VisionEngine, mailbox: LatestFrame, stats: dict) -> None:
         done = idx
 
 
-def _draw_memory(frame, views: list[TrackView]) -> None:
+class Silhouettes:
+    """Outlines for the display, computed on their own thread.
+
+    Drawing only. Masked crops were measured to make re-identification worse,
+    so this never touches the embedding path: it runs a segmentation model on
+    the newest frame whenever free and hands the display whatever it last
+    produced. Each outline is matched to a track by box overlap, so the shape
+    follows the number the binder assigned.
+    """
+
+    def __init__(self, cfg) -> None:
+        self._seg = YoloSegmenter(cfg)
+        self._lock = threading.Lock()
+        self._masks: list = []
+        self.ms = 0.0
+
+    def run(self, mailbox: "LatestFrame") -> None:
+        done = -1
+        while not mailbox.closed:
+            frame, idx = mailbox.get()
+            if frame is None or idx == done:
+                time.sleep(0.002)
+                continue
+            t = time.perf_counter()
+            try:
+                found = self._seg.detect_masks(frame)
+            except Exception:
+                import traceback
+                traceback.print_exc()
+                return
+            with self._lock:
+                self._masks = [(np.asarray(s.detection.box, np.float32), s.mask) for s in found]
+                self.ms = (time.perf_counter() - t) * 1000
+            done = idx
+
+    def for_views(self, views: list[TrackView]) -> dict[int, np.ndarray]:
+        """Best-overlapping silhouette per track id."""
+        with self._lock:
+            masks = list(self._masks)
+        if not masks or not views:
+            return {}
+        boxes = np.stack([m[0] for m in masks])
+        out = {}
+        for v in views:
+            iou = _iou_row(np.asarray(v.box, np.float32), boxes)
+            j = int(iou.argmax())
+            if iou[j] >= 0.4:
+                out[v.track_id] = masks[j][1]
+        return out
+
+
+def _iou_row(box: np.ndarray, boxes: np.ndarray) -> np.ndarray:
+    x1 = np.maximum(box[0], boxes[:, 0]); y1 = np.maximum(box[1], boxes[:, 1])
+    x2 = np.minimum(box[2], boxes[:, 2]); y2 = np.minimum(box[3], boxes[:, 3])
+    inter = np.clip(x2 - x1, 0, None) * np.clip(y2 - y1, 0, None)
+    a = max(box[2] - box[0], 0) * max(box[3] - box[1], 0)
+    b = np.clip(boxes[:, 2] - boxes[:, 0], 0, None) * np.clip(boxes[:, 3] - boxes[:, 1], 0, None)
+    return inter / np.maximum(a + b - inter, 1e-6)
+
+
+def _draw_memory(frame, views: list[TrackView], shapes: dict[int, np.ndarray] | None = None) -> None:
+    shapes = shapes or {}
     for v in views:
         if v.identity_id is None:
             continue
         colour = _color(v.identity_id)
         x1, y1, x2, y2 = (int(c) for c in v.box)
+        mask = shapes.get(v.track_id)
         if v.hidden:
             _dashed(frame, x1, y1, x2, y2, colour)
             text = f"#{v.identity_id} {v.label} (hidden)"
+        elif mask is not None:
+            # The silhouette separates two people who overlap far better than
+            # two boxes do; a faint fill makes the shape readable at a glance.
+            cv2.polylines(frame, outline(mask), True, colour, 2)
+            tint = np.zeros_like(frame); tint[mask] = colour
+            cv2.addWeighted(tint, 0.25, frame, 1.0, 0, dst=frame)
+            text = f"#{v.identity_id} {v.label} " + ("new" if v.is_new else f"seen before ({v.score:.2f})")
         else:
             cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2)
             text = f"#{v.identity_id} {v.label} " + ("new" if v.is_new else f"seen before ({v.score:.2f})")
@@ -220,6 +290,8 @@ def main() -> None:
     ap.add_argument("--db", type=Path, default=Path("data/live.db"))
     ap.add_argument("--index", type=Path, default=Path("data/live.faiss"))
     ap.add_argument("--max-frames", type=int, default=None)
+    ap.add_argument("--outlines", default="data/models/yolo11n_seg_768.onnx",
+                    help="segmentation model for display silhouettes; empty string draws boxes")
     ap.add_argument("--between", choices=("follow", "predict", "hold"), default="follow",
                     help="how boxes move between pipeline passes: follow the pixels (optical flow), "
                          "predict from the tracker's velocity, or hold still")
@@ -242,10 +314,19 @@ def main() -> None:
     print(f"source {args.source} at {fps:g} fps | memory {mem_cfg.db_path} ({len(engine.memory)} identities)")
     print("keys: 1 memory   2 search (click an object)   3 anomaly   q quit")
 
+    shapes_of: "Silhouettes | None" = None
+    if args.outlines and Path(args.outlines).exists():
+        seg_cfg = replace(load_detector_config(), model_path=args.outlines, input_size=768)
+        shapes_of = Silhouettes(seg_cfg)
+    elif args.outlines:
+        print(f"no segmentation model at {args.outlines}; drawing boxes")
+
     mailbox = LatestFrame()
     stats: dict = {"pipeline_ms": 0.0, "skipped": 0}
     threading.Thread(target=_capture, args=(source, mailbox, fps if is_file else None), daemon=True).start()
     threading.Thread(target=_worker, args=(engine, mailbox, stats), daemon=True).start()
+    if shapes_of is not None:
+        threading.Thread(target=shapes_of.run, args=(mailbox,), daemon=True).start()
 
     mode = "memory"
     selected: int | None = None
@@ -293,7 +374,7 @@ def main() -> None:
                 hits = engine.similar(selected, k=5)
 
             if mode == "memory":
-                _draw_memory(frame, views)
+                _draw_memory(frame, views, shapes_of.for_views(views) if shapes_of else None)
             elif mode == "search":
                 _draw_search(frame, views, selected, hits)
             else:
@@ -304,7 +385,8 @@ def main() -> None:
             shown += 1
             elapsed = time.perf_counter() - t0
             c = engine.counts
-            hud = (f"{mode.upper()}  display {shown / max(elapsed, 1e-6):.1f} fps  pipeline {stats['pipeline_ms']:.0f} ms"
+            seg_ms = f"  outlines {shapes_of.ms:.0f} ms" if shapes_of else ""
+            hud = (f"{mode.upper()}  display {shown / max(elapsed, 1e-6):.1f} fps  pipeline {stats['pipeline_ms']:.0f} ms{seg_ms}"
                    f" (skips {stats['skipped']})  objects {len(views)}  known {c.rebound}  new {c.created}")
             cv2.putText(frame, hud, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
             cv2.imshow(win, frame)
