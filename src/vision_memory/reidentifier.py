@@ -495,7 +495,13 @@ class IdentityBinder:
                 )
                 if revised is not None:
                     for other, res in list(self.bound.items()):
-                        if res.identity_id == held.identity_id:
+                        # Holders of this track's old record, and any binding
+                        # to a record the merge deleted (a track reaped this
+                        # very frame, no longer in `active`), now point at the
+                        # survivor, so forget() never hands back a number
+                        # memory does not have.
+                        if (res.identity_id == held.identity_id
+                                or self.reid.memory.get(res.identity_id) is None):
                             self.bound[other] = revised
                     self.folded_hits[track.id] = track.hits
                     events.reclaimed += 1
