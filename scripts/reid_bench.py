@@ -63,7 +63,7 @@ def collect_track_embeddings(
         detections = detector.detect(frame) if frame_idx % video_cfg.detect_every_n_frames == 0 else None
         # Describe before associating, and with the same descriptor the rest of
         # the system uses, so what is measured here is what actually ships.
-        described = describe_detections(describer, frame, detections) if detections else None
+        described = describe_detections(describer, frame, detections, load_tracker_config().min_exemplar_confidence) if detections else None
         active = tracker.update(detections, described)
         # Record a vector against the track that ended up owning that detection.
         for track in active:

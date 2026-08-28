@@ -91,7 +91,7 @@ def _run(sequence: Sequence, max_frames: int | None) -> tuple[dict, dict, int]:
                 break
             if (number - 1) % video_cfg.detect_every_n_frames == 0:
                 detections = detector.detect(frame)
-                embeddings = describe_detections(describer, frame, detections)
+                embeddings = describe_detections(describer, frame, detections, tracker_cfg.min_exemplar_confidence)
             else:
                 detections, embeddings = None, None
             active = tracker.update(detections, embeddings)

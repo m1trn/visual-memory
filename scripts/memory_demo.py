@@ -92,7 +92,7 @@ def main() -> None:
                 # than detection: every Nth detector cycle, batched over the frame.
                 if tracker_cfg.embed_every_n and detect_cycle % tracker_cfg.embed_every_n == 0:
                     t0 = time.perf_counter()
-                    embeddings = describe_detections(describer, frame, detections)
+                    embeddings = describe_detections(describer, frame, detections, tracker_cfg.min_exemplar_confidence)
                     embed_time += time.perf_counter() - t0
                     embed_calls += len(embeddings)
                 detect_cycle += 1

@@ -256,26 +256,31 @@ def describe_detections(
     describer: "RoutedDescriber | AppearanceDescriber",
     frame_bgr: np.ndarray,
     detections: Sequence["Detection"],
+    min_score: float = 0.0,
 ) -> dict[int, np.ndarray]:
-    """Embed every detection in a frame, keyed by its position in ``detections``.
+    """Embed the detections worth embedding, keyed by position in ``detections``.
 
     The one path from boxes to vectors. Seven scripts previously each built
     their own call, and three times a change was measured in one and left stale
     in another, so there is deliberately nothing left to keep in sync.
 
-    Every detection is embedded, weak ones included: association is where a
-    low-confidence box earns its keep, since appearance is most needed exactly
-    when a person is half-hidden and geometry is ambiguous. Whether a crop is
-    trustworthy enough to *remember* is a separate question, answered by
-    ``tracker.min_exemplar_confidence``.
+    ``min_score`` should be the tracker's ``min_exemplar_confidence``. Nothing
+    below it can ever be consumed: the tracker reads appearance only in its
+    high-confidence association pass, and the exemplar gate refuses weaker
+    crops. Profiled on the demo, embedding every box down to the detector's
+    0.1 floor cost 2.7 s per detector frame - dozens of surfboards, skis and
+    fragments of people - against 0.2 s for detection itself.
     """
-    if not detections:
+    keep = [i for i, d in enumerate(detections) if float(d.score) >= min_score]
+    if not keep:
         return {}
-    boxes = [d.box for d in detections]
+    boxes = [detections[i].box for i in keep]
     if isinstance(describer, RoutedDescriber):
-        return describer.describe(frame_bgr, boxes, [d.label for d in detections])
-    # A plain describer uses one model for everything and takes no labels.
-    return describer.describe(frame_bgr, boxes)
+        out = describer.describe(frame_bgr, boxes, [detections[i].label for i in keep])
+    else:
+        # A plain describer uses one model for everything and takes no labels.
+        out = describer.describe(frame_bgr, boxes)
+    return {keep[local]: vector for local, vector in out.items()}
 
 
 def _unit(v: np.ndarray) -> np.ndarray:

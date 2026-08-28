@@ -74,7 +74,7 @@ def build_cache(sequence: Sequence, max_frames: int | None) -> list:
             break
         if (number - 1) % video_cfg.detect_every_n_frames == 0:
             detections = detector.detect(frame)
-            embeddings = describe_detections(describer, frame, detections)
+            embeddings = describe_detections(describer, frame, detections, load_tracker_config().min_exemplar_confidence)
         else:
             detections, embeddings = None, None
         frames.append((number, detections, embeddings))

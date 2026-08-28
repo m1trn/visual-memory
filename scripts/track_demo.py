@@ -97,7 +97,7 @@ def main() -> None:
         embeddings = None
         if detections and describer is not None:
             t0 = time.perf_counter()
-            embeddings = describe_detections(describer, frame, detections)
+            embeddings = describe_detections(describer, frame, detections, tracker_cfg.min_exemplar_confidence)
             emb_times.append(time.perf_counter() - t0)
 
         t0 = time.perf_counter()

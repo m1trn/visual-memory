@@ -310,3 +310,30 @@ def test_due_for_embedding_respects_the_exemplar_gate() -> None:
     assert len(tracker.due_for_embedding()) == 1
     tracker.update([Detection(box, 0.2, 0, "person")])
     assert tracker.due_for_embedding() == [], "a weak box must not be offered for embedding"
+
+
+def test_embeddings_of_weak_detections_are_never_consumed() -> None:
+    """Justifies embedding only detections at or above min_exemplar_confidence.
+
+    Appearance is read only in the high-confidence association pass, and the
+    exemplar gate refuses weaker crops, so a run given embeddings for every
+    detection and a run given them only for strong ones must be identical.
+    """
+    rng = np.random.default_rng(3)
+    e = np.eye(6, dtype=np.float32)
+
+    def run(embed_all: bool):
+        cfg = _cfg(min_hits=1, min_exemplar_confidence=0.3, appearance_weight=0.5,
+                   appearance_veto=0.4, embed_every_n=1)
+        t = ByteTracker(cfg)
+        log = []
+        for k in range(12):
+            dets = [Detection(np.array([0.0, 0.0, 10.0, 20.0]) + k, 0.9, 0, "person"),
+                    Detection(np.array([50.0, 0.0, 60.0, 20.0]) + k, 0.2, 0, "person"),
+                    Detection(np.array([100.0, 0.0, 110.0, 20.0]) + k, 0.45, 0, "person")]
+            embs = {0: e[0], 1: e[1], 2: e[2]} if embed_all else {0: e[0], 2: e[2]}
+            act = t.update(dets, embs)
+            log.append(sorted((x.id, tuple(np.round(x.box, 3)), len(x.exemplars)) for x in act))
+        return log
+
+    assert run(True) == run(False)

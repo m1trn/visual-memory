@@ -165,7 +165,7 @@ def main() -> None:
             # decide who is who rather than only being recorded afterwards.
             # Without this the tracker arbitrates a crossing on box position
             # alone, which is how one person ends up with another's id.
-            embeddings = describe_detections(describer, frame, detections) if detections else None
+            embeddings = describe_detections(describer, frame, detections, tracker_cfg.min_exemplar_confidence) if detections else None
             active = tracker.update(detections, embeddings)
             events = binder.step(active, frame_idx)
             created += events.created

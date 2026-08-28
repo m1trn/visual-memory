@@ -70,7 +70,7 @@ def build_cache(data: Path, max_frames: int | None) -> list[dict]:
                 break
             if (number - 1) % video_cfg.detect_every_n_frames == 0:
                 detections = detector.detect(frame)
-                embeddings = describe_detections(describer, frame, detections)
+                embeddings = describe_detections(describer, frame, detections, load_tracker_config().min_exemplar_confidence)
             else:
                 detections, embeddings = None, None
             active = tracker.update(detections, embeddings)
