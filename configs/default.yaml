@@ -25,6 +25,17 @@ detector:
                            # 161 ms, 768 finds 5.7 in 201 ms, 960 finds 4.5 in 294 ms. 960 is worse as
                            # well as slower because YOLO11n is trained at 640 and upsampling puts people
                            # at a scale it never saw. Re-export with `yolo export format=onnx imgsz=768`.
+                           # Measured end to end against labels (IDF1 / switches / MOTA, YouTu embedder):
+                           #   768n  spawn 0.5   MOT17-02 53.6/10/33.5   held-out 81.3/ 9/61.9  <- shipped
+                           #   768n  spawn 0.6            50.1/ 4/29.0            82.7/10/69.0
+                           #   1280n spawn 0.6            57.6/12/36.0            79.0/16/62.7   2.8x cost
+                           #   s768  spawn 0.5            57.0/17/36.7            71.6/13/54.6   2.2x cost
+                           # Bigger or sharper detectors find more distant people (MOT17-02 up) but
+                           # their extra strong false positives spawn tracks that steal matches on
+                           # big easy people (held-out down). Nothing dominates; 768n keeps the best
+                           # switch counts on both. Use yolo11n_1280.onnx / input_size 1280 for
+                           # footage of distant crowds. A sign post the 768n calls a person at 0.36
+                           # survives every setting except ones that cost real people.
 
   conf_threshold: 0.1
 
