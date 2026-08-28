@@ -423,7 +423,8 @@ class IdentityBinder:
     def __init__(self, reid: ReIdentifier, fps: float, fresh: int,
                  reconsider_every: int, min_evidence: int = 2,
                  swap_margin: float = 0.0, min_new_identity_confidence: float = 0.0,
-                 convincing_confidence: float = 0.0, recent_views: int = 3) -> None:
+                 convincing_confidence: float = 0.0, recent_views: int = 3,
+                 still_object_motion: float = 0.0) -> None:
         self.reid = reid
         self.fps = fps
         self.fresh = fresh
@@ -431,6 +432,11 @@ class IdentityBinder:
         self.min_evidence = min_evidence
         self.swap_margin = swap_margin
         self.min_new_identity_confidence = min_new_identity_confidence
+        # A weakly detected track that has not moved this many of its own box
+        # widths since it began is a static object the detector mistook for a
+        # person - a post, a sign - not a person standing still, who would be
+        # detected confidently. Only such tracks are refused a new identity.
+        self.still_object_motion = still_object_motion
         # A detection at or above this is a real sighting; below it, a match
         # came from the tracker's low-confidence second pass and says nothing
         # about whether a person is there. The tracker's own high_conf.
@@ -556,7 +562,7 @@ class IdentityBinder:
                 held_by_others={**held_by_others, **taken_now},
                 origin_box=track.first_box,
             )
-            if res.is_new and track.peak_score < self.min_new_identity_confidence:
+            if res.is_new and self._looks_like_a_static_object(track):
                 # Not convincing enough to be a new person. The record just
                 # created is withdrawn; the track may still bind to an existing
                 # identity on a later frame if its appearance says so.
@@ -622,6 +628,23 @@ class IdentityBinder:
                     swaps += 1
                     break
         return swaps
+
+    def _looks_like_a_static_object(self, track) -> bool:
+        """Weakly detected AND never moved: a post, not a person.
+
+        Peak confidence alone was measured and rejected: a bar of 0.6 stopped a
+        sign post but hid real, distant, low-confidence people. Adding the
+        motion test keeps those people - they walk - and still refuses the
+        things that never do.
+        """
+        if track.peak_score >= self.min_new_identity_confidence:
+            return False
+        if self.still_object_motion <= 0.0 or track.first_box is None:
+            return True
+        a, b = np.asarray(track.first_box, float), np.asarray(track.box, float)
+        moved = float(np.hypot((b[0] + b[2]) / 2 - (a[0] + a[2]) / 2, (b[1] + b[3]) / 2 - (a[1] + a[3]) / 2))
+        width = max(float(a[2] - a[0]), 1.0)
+        return moved < self.still_object_motion * width
 
     def _displace(self, track, frame_idx: int) -> None:
         """Take a track's number away and treat it as a new object from here.

@@ -154,7 +154,8 @@ def main() -> None:
                                 swap_margin=reid_cfg.swap_margin,
                                 min_new_identity_confidence=reid_cfg.min_new_identity_confidence,
                                 convincing_confidence=tracker_cfg.high_conf,
-                                recent_views=tracker_cfg.veto_views)
+                                recent_views=tracker_cfg.veto_views,
+                                still_object_motion=reid_cfg.still_object_motion)
         while frame_idx < args.max_frames:
             ok, frame = cap.read()
             if not ok:

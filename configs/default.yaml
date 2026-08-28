@@ -132,14 +132,17 @@ reid:
                           # Measured: fires 0 times on both labelled sequences and on the demo clip -
                           # results are bit-identical with it off. Kept because the gap it closes is
                           # real and the condition makes it safe, but it has not yet earned a number.
-  min_new_identity_confidence: 0.0  # OFF. A track would have to be detected at least this confidently,
-                          # once, before it could CREATE a new identity. On the demo clip 0.6 stopped
-                          # a sign post (peak 0.53) becoming a numbered person; every real person
-                          # there peaked at 0.62-0.88. But scored honestly against labels - counting
-                          # an unnumbered track as what a viewer sees - it is worse on BOTH
-                          # sequences: 46.6%/27 -> 44.9%/39 and held-out 65.7%/21 -> 64.4%/25.
-                          # Real low-confidence people lose their number and fragment. Kept as a
-                          # knob because it is tested and cheap; not worth its cost on this footage.
+  min_new_identity_confidence: 0.0  # OFF. A track that never peaked this high AND never moved
+                          # still_object_motion box widths would be refused a NEW identity. Aimed
+                          # at a sign post the detector calls a person at 0.53. Measured three ways
+                          # on labels and lost every time: peak alone at 0.6 (held-out 65.7% -> 64.4%,
+                          # switches 21 -> 25); peak 0.6 + motion (MOT17-02 53.6%/10 -> 51.8%/25);
+                          # peak 0.55 + motion (53.6%/10 -> 53.3%/17, held-out neutral). Distant
+                          # real people have not moved half a box width when they get their second
+                          # view, so any deferral fragments them. A false-positive post is the
+                          # detector's error and has to be fixed there.
+  still_object_motion: 0.5  # box widths a weak track must have travelled to count as a person; only
+                          # consulted when the bar above is on.
   claim_margin: 0.08      # how much better a match must be to take an identity from its current
                           # holder. Two similar-looking people both score against one stored
                           # record, and without this whichever appeared first keeps it for good.
