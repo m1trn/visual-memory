@@ -106,8 +106,7 @@ def run(frames: list, sequence: Sequence, threshold: float | None, dim: int):
                                 min_new_identity_confidence=rc.min_new_identity_confidence,
                                 convincing_confidence=tracker_cfg.high_conf,
                                 recent_views=tracker_cfg.veto_views,
-                                still_object_motion=rc.still_object_motion,
-                                votes_to_rebind=rc.votes_to_rebind)
+                                still_object_motion=rc.still_object_motion)
         for number, detections, embeddings in frames:
             active = tracker.update(detections, embeddings)
             if threshold is not None:

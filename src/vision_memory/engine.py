@@ -100,7 +100,6 @@ class VisionEngine:
             min_new_identity_confidence=reid_cfg.min_new_identity_confidence,
             convincing_confidence=tracker_cfg.high_conf, recent_views=tracker_cfg.veto_views,
             still_object_motion=reid_cfg.still_object_motion,
-            votes_to_rebind=reid_cfg.votes_to_rebind,
         )
         self.tracker_cfg = tracker_cfg
         self.video_cfg = video_cfg

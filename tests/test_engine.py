@@ -60,7 +60,7 @@ def _engine(tmp_path):
                             appearance_weight=0.5, embed_every_n=1, max_exemplars=16)
     reid = ReidConfig(verifier="cosine", verifier_weights="", min_pair_gap=3, max_pairs_per_track=200, observation_quantile=0.9,
                       max_false_merge_rate=0.02, claim_margin=0.08, swap_margin=0.08,
-                      min_new_identity_confidence=0.0, still_object_motion=0.5, votes_to_rebind=1, merge_margin=0.15,
+                      min_new_identity_confidence=0.0, still_object_motion=0.5, merge_margin=0.15,
                       reconsider_every=15, continuity_bonus=0.15, spatial_scale=2.0, temporal_scale=2.0,
                       test_fraction=0.3, seed=0)
     video = VideoConfig(detect_every_n_frames=3, min_crop_px=8, crop_upper_fraction=0.6, embed_for_association=True)

@@ -70,7 +70,6 @@ class ReidConfig:
     swap_margin: float
     min_new_identity_confidence: float
     still_object_motion: float
-    votes_to_rebind: int
     merge_margin: float
     reconsider_every: int
     continuity_bonus: float
