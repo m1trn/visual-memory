@@ -176,6 +176,8 @@ def main() -> None:
     ap.add_argument("--negatives", type=int, default=3, help="hard negatives kept per positive")
     ap.add_argument("--hidden", type=int, default=128)
     ap.add_argument("--epochs", type=int, default=40)
+    ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument("--weight-decay", type=float, default=1e-4)
     ap.add_argument("--out", type=Path, default=Path(load_reid_config().verifier_weights))
     args = ap.parse_args()
     rng = np.random.default_rng(load_reid_config().seed)
@@ -192,7 +194,10 @@ def main() -> None:
     print(f"pairs: train {len(y)} ({int(y.sum())} same) | held-out {len(vy)} ({int(vy.sum())} same)")
 
     model = MlpVerifier(slice_dim, hidden=args.hidden, seed=reid_cfg.seed)
-    model.fit(a, b, y, epochs=args.epochs, validation=(va, vb, vy), log=print)
+    model.fit(a, b, y, epochs=args.epochs, lr=args.lr, weight_decay=args.weight_decay,
+              validation=(va, vb, vy), log=print)
+    cos_pairs = auroc((va[:, :slice_dim] * vb[:, :slice_dim]).sum(1), vy.astype(bool))
+    print(f"held-out PAIR AUROC: cosine {cos_pairs:.4f}  (model above)")
 
     print("\nheld-out real returns, the binder's own aggregation:")
     stored, queries = real_returns(held_rows, K)
