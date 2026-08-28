@@ -218,6 +218,12 @@ appearance:
                           # OSNet x0.25 (data/models/osnet_x0_25_msmt17.onnx) remains selectable.
   projection_weights: ""    # path to a trained 768->k projection (scripts/reid_project.py); empty = off.
                           # Changes the person vector, so memory starts empty when switched on.
+                          # Measured 2026-08-28, 768 -> 128 trained on 300 labelled people: same
+                          # separation on held-out returns (AUROC 0.982 vs 0.980) at a sixth of the
+                          # size, but end to end at the calibrated boundary IDF1 is lower on both
+                          # sequences (held-out 79.5% vs 81.3%, switches 5 vs 9; tuned 50.6% vs
+                          # 53.6%). Off by default: accuracy first. Turn on when memory size or
+                          # search cost matters more than ~2 IDF1 points.
   specialist_labels: [person]  # classes the re-id network is trained for. It is much better than
                                # the general encoder on these and much worse on anything else, so
                                # everything not listed here keeps using the general encoder.
