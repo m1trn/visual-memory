@@ -155,6 +155,16 @@ reid:
                           # detector's error and has to be fixed there.
   still_object_motion: 0.5  # box widths a weak track must have travelled to count as a person; only
                           # consulted when the bar above is on.
+  votes_to_rebind: 1      # passes in a row that must name the same existing identity before a
+                          # track is given it. 1 commits immediately. Borrowed from Roboflow's NBA
+                          # pipeline, which confirms a jersey number only after three identical
+                          # readings; a rebind is the decision that can be wrong about somebody
+                          # already on file, while minting a new identity is never delayed.
+                          # Measured and left at 1: held-out switches 9 -> 35 at two votes and 37 at
+                          # three, IDF1 81.3% -> 80.9% -> 64.7%. Their pipeline votes on an OCR
+                          # reading of a fixed number; ours would defer a track that has ALREADY been
+                          # judged more likely to be somebody on file than anybody else, and a
+                          # deferred track keeps showing nothing while a rival claims the number.
   claim_margin: 0.08      # how much better a match must be to take an identity from its current
                           # holder. Two similar-looking people both score against one stored
                           # record, and without this whichever appeared first keeps it for good.

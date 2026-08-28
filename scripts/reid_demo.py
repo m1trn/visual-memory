@@ -38,7 +38,8 @@ from vision_memory.memory import VisualMemory  # noqa: E402
 from vision_memory.reid import (Verifier, balance, build_verifier, calibrate_identity_threshold,
                                 identity_score_with, mine_pairs, split_by_group)  # noqa: E402
 from vision_memory.reidentifier import IdentityBinder, ReIdentifier, Resolution  # noqa: E402
-from vision_memory.tracker import ByteTracker  # noqa: E402
+from vision_memory.segmenter import YoloSegmenter, outline  # noqa: E402
+from vision_memory.tracker import ByteTracker, iou_matrix  # noqa: E402
 
 _DEFAULT_VIDEO = Path("data/samples/vtest.avi")
 _DEFAULT_URL = "https://raw.githubusercontent.com/opencv/opencv/4.x/samples/data/vtest.avi"
@@ -87,7 +88,25 @@ def _dashed(frame: np.ndarray, x1: int, y1: int, x2: int, y2: int, colour, step:
         cv2.line(frame, (x2, y), (x2, min(y + step, y2)), colour, 1)
 
 
-def _draw(frame: np.ndarray, boxes: _Boxes, bound: dict[int, Resolution]) -> None:
+def _shapes_for(segmenter, frame: np.ndarray, boxes: _Boxes) -> dict[int, np.ndarray]:
+    """Silhouette per track id, matched to its box by overlap."""
+    if segmenter is None:
+        return {}
+    found = segmenter.detect_masks(frame)
+    if not found:
+        return {}
+    seg_boxes = np.array([s.detection.box for s in found], dtype=np.float64)
+    out: dict[int, np.ndarray] = {}
+    for track_id, box, _label, _hidden in boxes:
+        iou = iou_matrix(np.asarray(box, np.float64)[None], seg_boxes)[0]
+        j = int(iou.argmax())
+        if iou[j] >= 0.4:
+            out[track_id] = found[j].mask
+    return out
+
+
+def _draw(frame: np.ndarray, boxes: _Boxes, bound: dict[int, Resolution],
+          shapes: dict[int, np.ndarray] | None = None) -> None:
     """Label every box with its memory identity.
 
     A track and an identity are different numbering systems, so a box must never
@@ -102,6 +121,7 @@ def _draw(frame: np.ndarray, boxes: _Boxes, bound: dict[int, Resolution]) -> Non
             continue  # not yet identified; drawing a provisional number would lie
         color = _color(res.identity_id)
         x1, y1, x2, y2 = (int(v) for v in box)
+        mask = (shapes or {}).get(track_id)
         if hidden:
             # Somebody is standing in front of them. The track is still held and
             # its position is predicted, so keep the identity on screen rather
@@ -109,6 +129,14 @@ def _draw(frame: np.ndarray, boxes: _Boxes, bound: dict[int, Resolution]) -> Non
             # says the position is an estimate, not a sighting.
             _dashed(frame, x1, y1, x2, y2, color)
             text = f"#{res.identity_id} {label} (hidden)"
+        elif mask is not None:
+            # The silhouette separates two people who overlap far better than
+            # two boxes do. Drawing only: masked CROPS were measured to make
+            # re-identification worse, so the embedding path never sees this.
+            cv2.polylines(frame, outline(mask), True, color, 2)
+            tint = np.zeros_like(frame); tint[mask] = color
+            cv2.addWeighted(tint, 0.25, frame, 1.0, 0, dst=frame)
+            text = f"#{res.identity_id} {label} " + ("new" if res.is_new else f"seen before ({res.score:.2f})")
         else:
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
             text = f"#{res.identity_id} {label} " + ("new" if res.is_new else f"seen before ({res.score:.2f})")
@@ -119,6 +147,8 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--video", type=Path, default=_DEFAULT_VIDEO)
     ap.add_argument("--max-frames", type=int, default=300)
+    ap.add_argument("--outlines", default="data/models/yolo11n_seg_768.onnx",
+                    help="segmentation model for silhouettes in the written video; empty draws boxes")
     ap.add_argument("--db", type=Path, default=Path("data/reid_demo.db"))
     ap.add_argument("--index", type=Path, default=Path("data/reid_demo.faiss"))
     args = ap.parse_args()
@@ -131,6 +161,9 @@ def main() -> None:
     detector, encoder = YoloOnnxDetector(load_detector_config()), Encoder(load_encoder_config())
     describer = build_describer(load_appearance_config())
     tracker = ByteTracker(tracker_cfg)
+    segmenter = None
+    if args.outlines and Path(args.outlines).exists():
+        segmenter = YoloSegmenter(replace(load_detector_config(), model_path=args.outlines, input_size=768))
     verifier, threshold = _fit_verifier(_DEFAULT_CACHE)
     reid_cfg = load_reid_config()
     cap = cv2.VideoCapture(str(args.video))
@@ -155,7 +188,8 @@ def main() -> None:
                                 min_new_identity_confidence=reid_cfg.min_new_identity_confidence,
                                 convincing_confidence=tracker_cfg.high_conf,
                                 recent_views=tracker_cfg.veto_views,
-                                still_object_motion=reid_cfg.still_object_motion)
+                                still_object_motion=reid_cfg.still_object_motion,
+                                votes_to_rebind=reid_cfg.votes_to_rebind)
         while frame_idx < args.max_frames:
             ok, frame = cap.read()
             if not ok:
@@ -177,8 +211,8 @@ def main() -> None:
             # Keep drawing a track for as long as it is held, marking the frames
             # where its position is predicted rather than measured. Hiding it
             # made an occluded person vanish, which reads as losing them.
-            _draw(frame, [(t.id, t.box.copy(), t.label, t.time_since_update > fresh)
-                          for t in active], binder.bound)
+            drawable = [(t.id, t.box.copy(), t.label, t.time_since_update > fresh) for t in active]
+            _draw(frame, drawable, binder.bound, _shapes_for(segmenter, frame, drawable))
             writer.write(frame)
 
             for lost in tracker.pop_lost():

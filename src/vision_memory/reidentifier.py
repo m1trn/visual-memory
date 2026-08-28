@@ -395,6 +395,7 @@ class BindingEvents:
     reclaimed: int = 0
     taken: int = 0
     swapped: int = 0
+    deferred: int = 0
 
 
 class IdentityBinder:
@@ -424,7 +425,7 @@ class IdentityBinder:
                  reconsider_every: int, min_evidence: int = 2,
                  swap_margin: float = 0.0, min_new_identity_confidence: float = 0.0,
                  convincing_confidence: float = 0.0, recent_views: int = 3,
-                 still_object_motion: float = 0.0) -> None:
+                 still_object_motion: float = 0.0, votes_to_rebind: int = 1) -> None:
         self.reid = reid
         self.fps = fps
         self.fresh = fresh
@@ -437,6 +438,12 @@ class IdentityBinder:
         # person - a post, a sign - not a person standing still, who would be
         # detected confidently. Only such tracks are refused a new identity.
         self.still_object_motion = still_object_motion
+        # How many passes in a row must name the SAME existing identity
+        # before a track is given it. Binding to a record is the decision
+        # that can be wrong about a person who is already on file; minting
+        # a new identity is not, and is never delayed.
+        self.votes_to_rebind = max(int(votes_to_rebind), 1)
+        self._votes: dict[int, tuple[int, int]] = {}
         # A detection at or above this is a real sighting; below it, a match
         # came from the tracker's low-confidence second pass and says nothing
         # about whether a person is there. The tracker's own high_conf.
@@ -568,6 +575,20 @@ class IdentityBinder:
                 # identity on a later frame if its appearance says so.
                 self.reid.memory.forget(res.identity_id)
                 continue
+            if not res.is_new and self.votes_to_rebind > 1:
+                # A rebind is the claim "this is somebody already on file", and
+                # it is made from two observations of a person who may still be
+                # half-occluded. Require the same answer on consecutive passes
+                # before showing it; a different answer restarts the count. A
+                # NEW identity is never delayed - withholding a number from
+                # somebody genuinely new only fragments them.
+                seen, count = self._votes.get(track.id, (0, 0))
+                count = count + 1 if seen == res.identity_id else 1
+                self._votes[track.id] = (res.identity_id, count)
+                if count < self.votes_to_rebind:
+                    events.deferred += 1
+                    continue
+                self._votes.pop(track.id, None)
             for other in active:
                 if other.id != track.id and self.identity_of(other.id) == res.identity_id:
                     self._displace(other, frame_idx)
@@ -689,5 +710,6 @@ class IdentityBinder:
         wore without counting the hits memory was already told about.
         """
         self._dormant.discard(track_id)
+        self._votes.pop(track_id, None)
         return (self.bound.pop(track_id, None), self.first_frame.pop(track_id, None),
                 self.folded_hits.pop(track_id, 0))
