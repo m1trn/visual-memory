@@ -134,15 +134,19 @@ class VisionEngine:
         carries every track across the gap, and ``max_age`` counts processed
         frames, so a slow pipeline loses smoothness but not identities.
         """
+        # The models run OUTSIDE the lock: they take hundreds of milliseconds
+        # and touch no shared state, and the display thread must be able to
+        # read `view()` while they run. Measured: holding the lock here pinned
+        # the display to the pipeline's rate (0.6 fps against a 30 fps camera).
+        detections = self.detector.detect(frame_bgr)
+        embeddings = describe_detections(
+            self.describer, frame_bgr, detections, self.tracker_cfg.min_exemplar_confidence
+        )
         with self._lock:
             gap = frame_idx - self._last_frame_idx - 1 if self._last_frame_idx >= 0 else 0
             # Objects moved during the frames we did not look at; follow them
             # without ageing anyone - there was no detection to miss.
             self.tracker.advance(gap)
-            detections = self.detector.detect(frame_bgr)
-            embeddings = describe_detections(
-                self.describer, frame_bgr, detections, self.tracker_cfg.min_exemplar_confidence
-            )
             active = self.tracker.update(detections, embeddings)
             events = self.binder.step(active, frame_idx)
             for lost in self.tracker.pop_lost():

@@ -241,8 +241,11 @@ def main() -> None:
         cv2.destroyAllWindows()
         engine.close()
         c = engine.counts
+        elapsed = max(time.perf_counter() - t0, 1e-6)
         print(f"processed {c.processed} of {last_idx + 1} frames | identified new {c.created}, "
               f"recognized {c.rebound}, taken back {c.taken} | identities in memory {len(engine.memory)}")
+        print(f"display {shown / elapsed:.1f} fps | pipeline {stats['pipeline_ms']:.0f} ms per pass, "
+              f"{stats['skipped']} frames skipped per pass at the end")
 
 
 if __name__ == "__main__":
