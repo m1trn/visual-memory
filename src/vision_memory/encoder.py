@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Sequence, Union
 
+import warnings
+
 import numpy as np
 import torch
 from PIL import Image
@@ -33,7 +35,11 @@ class Encoder:
         self.cfg = cfg
         self.device = torch.device(cfg.device)
         if cfg.backend == "dinov2":
-            self.model = torch.hub.load("facebookresearch/dinov2", cfg.name, verbose=False)
+            with warnings.catch_warnings():
+                # DINOv2 probes for xFormers, an optional GPU attention library,
+                # and warns per layer when it is absent. On CPU it is not wanted.
+                warnings.filterwarnings("ignore", message="xFormers is not available")
+                self.model = torch.hub.load("facebookresearch/dinov2", cfg.name, verbose=False)
         elif cfg.backend == "radio":
             # RADIO applies its own input conditioning, so images stay in [0, 1].
             self.model = torch.hub.load(
