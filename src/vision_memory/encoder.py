@@ -94,6 +94,31 @@ class Encoder:
                 out.append(feats.cpu().numpy().astype(np.float32, copy=False))
         return np.concatenate(out, axis=0)
 
+    def encode_patches(self, images: Sequence[ImageLike]) -> np.ndarray:
+        """Per-patch descriptors, shape ``(N, grid, grid, dim)``, each unit-norm.
+
+        The same forward pass as ``encode_batch`` but keeping the tokens it
+        normally discards: a ViT describes every 14x14 patch of the crop, and
+        the global descriptor is only their summary. Anomaly scoring on the
+        summary can say an object is unusual; scoring each patch says WHERE.
+
+        DINOv2 only. RADIO returns its own spatial features under a different
+        contract, and no measurement here has needed them.
+        """
+        if self.cfg.backend != "dinov2":
+            raise NotImplementedError(f"patch tokens are dinov2-only, not {self.cfg.backend!r}")
+        if len(images) == 0:
+            return np.empty((0, 0, 0, self._dim), dtype=np.float32)
+        out: list[np.ndarray] = []
+        with torch.inference_mode():
+            for i in range(0, len(images), self.cfg.batch_size):
+                x = self._preprocess(images[i : i + self.cfg.batch_size]).to(self.device)
+                tokens = self.model.forward_features(x)["x_norm_patchtokens"]  # (B, P, dim)
+                tokens = torch.nn.functional.normalize(tokens, dim=-1)
+                grid = int(round(tokens.shape[1] ** 0.5))
+                out.append(tokens.reshape(len(x), grid, grid, -1).cpu().numpy().astype(np.float32))
+        return np.concatenate(out, axis=0)
+
     def _preprocess(self, images: Sequence[ImageLike]) -> torch.Tensor:
         """RGB images -> normalized float tensor (B, 3, S, S)."""
         size = self.cfg.input_size

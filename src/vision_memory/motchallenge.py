@@ -103,8 +103,15 @@ def metrics_module():
     return motmetrics
 
 
-def load_sequence(path: str | Path) -> Sequence:
-    """Read a sequence directory, with its ground truth if one is present."""
+def load_sequence(path: str | Path, keep_classes: "tuple[int, ...] | None" = None) -> Sequence:
+    """Read a sequence directory, with its ground truth if one is present.
+
+    ``keep_classes`` selects which annotated classes count, defaulting to
+    MOT17's upright pedestrian. A VisDrone sequence written by
+    ``scripts/fetch_visdrone.py`` uses the same file layout with vehicle
+    classes, so passing e.g. ``(4, 5, 6, 9)`` scores cars, vans, trucks and
+    buses instead.
+    """
     path = Path(path)
     info = configparser.ConfigParser()
     read = info.read(path / "seqinfo.ini")
@@ -118,7 +125,7 @@ def load_sequence(path: str | Path) -> Sequence:
         width=int(section.get("imWidth", 0)),
         height=int(section.get("imHeight", 0)),
         length=int(section["seqLength"]),
-        truth=_read_labels(path / "gt" / "gt.txt"),
+        truth=_read_labels(path / "gt" / "gt.txt", keep_classes),
     )
 
 
@@ -134,7 +141,7 @@ def find_sequences(root: str | Path) -> list[Path]:
     return sorted(p.parent for p in root.rglob("seqinfo.ini"))
 
 
-def _read_labels(path: Path) -> dict[int, GroundTruth]:
+def _read_labels(path: Path, keep_classes: "tuple[int, ...] | None" = None) -> dict[int, GroundTruth]:
     """Parse ``gt.txt`` into per-frame boxes, identities and visibility."""
     if not path.exists():
         return {}
@@ -143,8 +150,9 @@ def _read_labels(path: Path) -> dict[int, GroundTruth]:
         return {}
     # frame, id, x, y, w, h, keep, class, visibility
     keep = raw[:, 6] > 0
+    wanted = (_PEDESTRIAN,) if keep_classes is None else tuple(keep_classes)
     if raw.shape[1] > 7:
-        keep &= raw[:, 7].astype(np.int64) == _PEDESTRIAN
+        keep &= np.isin(raw[:, 7].astype(np.int64), wanted)
     raw = raw[keep]
     visibility = raw[:, 8] if raw.shape[1] > 8 else np.ones(len(raw))
 

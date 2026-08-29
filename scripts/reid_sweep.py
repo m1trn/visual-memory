@@ -83,7 +83,8 @@ def build_cache(sequence: Sequence, max_frames: int | None) -> list:
     return frames
 
 
-def run(frames: list, sequence: Sequence, threshold: float | None, dim: int):
+def run(frames: list, sequence: Sequence, threshold: float | None, dim: int,
+        labels: "frozenset[str]" = frozenset({"person"})):
     """Track, and optionally identify, returning per-frame hypothesis boxes."""
     video_cfg, tracker_cfg = load_video_config(), load_tracker_config()
     fresh = video_cfg.detect_every_n_frames
@@ -114,7 +115,7 @@ def run(frames: list, sequence: Sequence, threshold: float | None, dim: int):
             for lost in tracker.pop_lost():
                 binder.forget(lost.id)
 
-            drawn = [t for t in active if t.time_since_update <= fresh and t.label == "person"]
+            drawn = [t for t in active if t.time_since_update <= fresh and t.label in labels]
             by_tracker[number] = {t.id: t.box for t in drawn}
             # Score what a viewer sees: a numbered box under its identity, an
             # unnumbered one under its track (negative, so the two namespaces
@@ -133,10 +134,16 @@ def main() -> None:
     parser.add_argument("--max-frames", type=int, default=None)
     parser.add_argument("--rebuild", action="store_true")
     parser.add_argument("--cache", type=Path, default=None)
+    parser.add_argument("--classes", type=int, nargs="+", default=None,
+                        help="annotated class ids to score (default: MOT17 pedestrians). "
+                             "VisDrone vehicles are 4 car, 5 van, 6 truck, 9 bus, 10 motor.")
+    parser.add_argument("--labels", nargs="+", default=None,
+                        help="detector labels to track (default: person)")
     args = parser.parse_args()
 
     mm = metrics_module()
-    sequences = [load_sequence(p) for p in find_sequences(args.data)]
+    sequences = [load_sequence(p, tuple(args.classes) if args.classes else None)
+                 for p in find_sequences(args.data)]
     sequences = [s for s in sequences if s.truth]
     if not sequences:
         raise SystemExit(f"no labelled sequences under {args.data}")
@@ -157,12 +164,13 @@ def main() -> None:
 
     accs, names = [], []
     identities = {}
-    by_tracker, _, _ = run(frames, sequence, None, dim)
+    labels = frozenset(args.labels or ('person',))
+    by_tracker, _, _ = run(frames, sequence, None, dim, labels)
     accs.append(_score(sequence, by_tracker, args.max_frames))
     names.append("tracker only")
 
-    for threshold in (0.55, 0.593, 0.65):
-        _, by_reid, count = run(frames, sequence, threshold, dim)
+    for threshold in (0.3, 0.45, 0.6, 0.75, 0.9):
+        _, by_reid, count = run(frames, sequence, threshold, dim, labels)
         accs.append(_score(sequence, by_reid, args.max_frames))
         names.append(f"re-id @ {threshold:.3f}")
         identities[threshold] = count
