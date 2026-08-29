@@ -272,6 +272,23 @@ class Heatmaps:
             return dict(self._maps)
 
 
+def _shape(frame, box, colour, mask=None, thickness: int = 2, fill: float = 0.0) -> None:
+    """Draw an object: its silhouette when one is known, otherwise its box.
+
+    Every mode uses this, so the outlines are not a memory-mode luxury - the
+    shape is what tells two overlapping objects apart, whichever question the
+    viewer is asking.
+    """
+    if mask is not None:
+        cv2.polylines(frame, outline(mask), True, colour, thickness)
+        if fill > 0:
+            tint = np.zeros_like(frame); tint[mask] = colour
+            cv2.addWeighted(tint, fill, frame, 1.0, 0, dst=frame)
+        return
+    x1, y1, x2, y2 = (int(c) for c in box)
+    cv2.rectangle(frame, (x1, y1), (x2, y2), colour, thickness)
+
+
 def _draw_memory(frame, views: list[TrackView], shapes: dict[int, np.ndarray] | None = None) -> None:
     shapes = shapes or {}
     for v in views:
@@ -283,26 +300,23 @@ def _draw_memory(frame, views: list[TrackView], shapes: dict[int, np.ndarray] | 
         if v.hidden:
             _dashed(frame, x1, y1, x2, y2, colour)
             text = f"#{v.identity_id} {v.label} (hidden)"
-        elif mask is not None:
+        else:
             # The silhouette separates two people who overlap far better than
             # two boxes do; a faint fill makes the shape readable at a glance.
-            cv2.polylines(frame, outline(mask), True, colour, 2)
-            tint = np.zeros_like(frame); tint[mask] = colour
-            cv2.addWeighted(tint, 0.25, frame, 1.0, 0, dst=frame)
-            text = f"#{v.identity_id} {v.label} " + ("new" if v.is_new else f"seen before ({v.score:.2f})")
-        else:
-            cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2)
+            _shape(frame, v.box, colour, mask, 2, fill=0.25)
             text = f"#{v.identity_id} {v.label} " + ("new" if v.is_new else f"seen before ({v.score:.2f})")
         cv2.putText(frame, text, (x1, max(y1 - 4, 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, colour, 1)
 
 
-def _draw_search(frame, views, selected: int | None, hits) -> None:
+def _draw_search(frame, views, selected: int | None, hits, shapes: dict | None = None) -> None:
     for v in views:
         x1, y1, x2, y2 = (int(c) for c in v.box)
         chosen = v.track_id == selected
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255) if chosen else (160, 160, 160), 3 if chosen else 1)
+        colour = (0, 255, 255) if chosen else (160, 160, 160)
+        _shape(frame, v.box, colour, (shapes or {}).get(v.track_id), 3 if chosen else 1,
+               fill=0.3 if chosen else 0.0)
         cv2.putText(frame, f"{v.label}" + (f" #{v.identity_id}" if v.identity_id is not None else ""),
-                    (x1, max(y1 - 4, 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255) if chosen else (160, 160, 160), 1)
+                    (x1, max(y1 - 4, 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, colour, 1)
     y = 60
     cv2.putText(frame, "click an object; most similar stored identities:", (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
     for ident, score in hits[:5]:
@@ -313,7 +327,8 @@ def _draw_search(frame, views, selected: int | None, hits) -> None:
         cv2.putText(frame, "  (nothing stored of this kind yet)", (10, y + 22), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
 
-def _draw_anomaly(frame, views, engine: VisionEngine, baselines: dict, maps: dict | None = None) -> None:
+def _draw_anomaly(frame, views, engine: VisionEngine, baselines: dict, maps: dict | None = None,
+                  shapes: dict | None = None) -> None:
     """Colour each object by how unusual it is, and paint WHERE when known.
 
     The box colour ranks the object against its own kind. The heatmap inside
@@ -324,8 +339,9 @@ def _draw_anomaly(frame, views, engine: VisionEngine, baselines: dict, maps: dic
     """
     for v in views:
         x1, y1, x2, y2 = (int(c) for c in v.box)
+        mask = (shapes or {}).get(v.track_id)
         if v.anomaly is None:
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (160, 160, 160), 1)
+            _shape(frame, v.box, (160, 160, 160), mask, 1)
             cv2.putText(frame, f"{v.label} (learning normal)", (x1, max(y1 - 4, 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (160, 160, 160), 1)
             continue
         base = baselines.get(v.label)
@@ -338,12 +354,18 @@ def _draw_anomaly(frame, views, engine: VisionEngine, baselines: dict, maps: dic
         heat = (maps or {}).get(v.track_id)
         h, w = frame.shape[:2]
         cx1, cy1, cx2, cy2 = max(x1, 0), max(y1, 0), min(x2, w), min(y2, h)
+        label = f"{v.label} unusual {pct:.0%}"
         if heat is not None and cx2 - cx1 > 8 and cy2 - cy1 > 8:
-            frame[cy1:cy2, cx1:cx2] = overlay(frame[cy1:cy2, cx1:cx2], heat, strength=0.4)
-            label = f"{v.label} unusual {pct:.0%}  worst patch {heat.score:.2f}"
-        else:
-            label = f"{v.label} unusual {pct:.0%}"
-        cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2)
+            painted = overlay(frame[cy1:cy2, cx1:cx2], heat, strength=0.4)
+            if mask is not None:
+                # Keep the heat on the object; the background around it is not
+                # what is being judged.
+                inside = mask[cy1:cy2, cx1:cx2]
+                frame[cy1:cy2, cx1:cx2][inside] = painted[inside]
+            else:
+                frame[cy1:cy2, cx1:cx2] = painted
+            label += f"  worst patch {heat.score:.2f}"
+        _shape(frame, v.box, colour, mask, 2)
         cv2.putText(frame, label, (x1, max(y1 - 4, 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, colour, 1)
 
 
@@ -442,15 +464,16 @@ def main() -> None:
             if mode == "search" and selected is not None and idx % 15 == 0:
                 hits = engine.similar(selected, k=5)
 
+            shapes = shapes_of.for_views(views) if shapes_of else None
             if mode == "memory":
-                _draw_memory(frame, views, shapes_of.for_views(views) if shapes_of else None)
+                _draw_memory(frame, views, shapes)
             elif mode == "search":
-                _draw_search(frame, views, selected, hits)
+                _draw_search(frame, views, selected, hits, shapes)
             else:
                 if idx % 30 == 0:
                     baselines.clear()
                 _draw_anomaly(frame, views, engine, baselines,
-                              heatmaps.get() if heatmaps else None)
+                              heatmaps.get() if heatmaps else None, shapes)
 
             shown += 1
             elapsed = time.perf_counter() - t0
