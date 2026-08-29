@@ -226,6 +226,52 @@ def _iou_row(box: np.ndarray, boxes: np.ndarray) -> np.ndarray:
     return inter / np.maximum(a + b - inter, 1e-6)
 
 
+class Heatmaps:
+    """Patch-anomaly maps for the display, computed on their own thread.
+
+    Each map costs a vision-transformer forward pass over the crop - hundreds
+    of milliseconds. Computing them where they are drawn put that cost on the
+    display thread once per object per frame, which is what made anomaly mode
+    crawl. Here one worker walks the tracks it has, newest processed frame
+    only, and the display paints whatever is ready.
+    """
+
+    def __init__(self, engine: VisionEngine) -> None:
+        self.engine = engine
+        self._lock = threading.Lock()
+        self._maps: dict[int, object] = {}
+        self.ms = 0.0
+        self.wanted = False        # only work while the display is in anomaly mode
+
+    def run(self, stats: dict, mailbox: "LatestFrame") -> None:
+        done = -1
+        while not mailbox.closed:
+            anchor = stats.get("anchor")
+            if not self.wanted or anchor is None or anchor[0] == done:
+                time.sleep(0.01)
+                continue
+            idx, frame = anchor
+            t = time.perf_counter()
+            fresh: dict[int, object] = {}
+            try:
+                for v in self.engine.view(idx):
+                    heat = self.engine.heatmap(frame, v)
+                    if heat is not None:
+                        fresh[v.track_id] = heat
+            except Exception:
+                import traceback
+                traceback.print_exc()
+                return
+            with self._lock:
+                self._maps = fresh
+                self.ms = (time.perf_counter() - t) * 1000
+            done = idx
+
+    def get(self) -> dict[int, object]:
+        with self._lock:
+            return dict(self._maps)
+
+
 def _draw_memory(frame, views: list[TrackView], shapes: dict[int, np.ndarray] | None = None) -> None:
     shapes = shapes or {}
     for v in views:
@@ -267,14 +313,14 @@ def _draw_search(frame, views, selected: int | None, hits) -> None:
         cv2.putText(frame, "  (nothing stored of this kind yet)", (10, y + 22), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
 
-def _draw_anomaly(frame, views, engine: VisionEngine, baselines: dict, source: np.ndarray | None = None) -> None:
+def _draw_anomaly(frame, views, engine: VisionEngine, baselines: dict, maps: dict | None = None) -> None:
     """Colour each object by how unusual it is, and paint WHERE when known.
 
     The box colour ranks the object against its own kind. The heatmap inside
     it comes from the patch model: each 14x14 patch scored against the nearest
     normal patch of that label, so a strange region glows and an ordinary one
-    stays dark. Painted on the frame the pipeline actually saw, since the
-    display's frame may have moved on.
+    stays dark. The maps are computed on their own thread and simply read
+    here - a transformer pass per object is far too slow to do while drawing.
     """
     for v in views:
         x1, y1, x2, y2 = (int(c) for c in v.box)
@@ -289,7 +335,7 @@ def _draw_anomaly(frame, views, engine: VisionEngine, baselines: dict, source: n
         # rank against the label's own normals: 0 = ordinary, 1 = stranger than everything stored
         pct = float((base < v.anomaly).mean()) if len(base) else 0.0
         colour = (0, int(255 * (1 - pct)), int(255 * pct))
-        heat = engine.heatmap(source if source is not None else frame, v)
+        heat = (maps or {}).get(v.track_id)
         h, w = frame.shape[:2]
         cx1, cy1, cx2, cy2 = max(x1, 0), max(y1, 0), min(x2, w), min(y2, h)
         if heat is not None and cx2 - cx1 > 8 and cy2 - cy1 > 8:
@@ -307,6 +353,8 @@ def main() -> None:
     ap.add_argument("--db", type=Path, default=Path("data/live.db"))
     ap.add_argument("--index", type=Path, default=Path("data/live.faiss"))
     ap.add_argument("--max-frames", type=int, default=None)
+    ap.add_argument("--mode", choices=("memory", "search", "anomaly"), default="memory",
+                    help="mode to start in; the 1/2/3 keys still switch")
     ap.add_argument("--outlines", default="data/models/yolo11n_seg_768.onnx",
                     help="segmentation model for display silhouettes; empty string draws boxes")
     ap.add_argument("--between", choices=("follow", "predict", "hold"), default="follow",
@@ -338,14 +386,18 @@ def main() -> None:
     elif args.outlines:
         print(f"no segmentation model at {args.outlines}; drawing boxes")
 
+    heatmaps = Heatmaps(engine)
+
     mailbox = LatestFrame()
     stats: dict = {"pipeline_ms": 0.0, "skipped": 0}
     threading.Thread(target=_capture, args=(source, mailbox, fps if is_file else None), daemon=True).start()
     threading.Thread(target=_worker, args=(engine, mailbox, stats), daemon=True).start()
     if shapes_of is not None:
         threading.Thread(target=shapes_of.run, args=(mailbox,), daemon=True).start()
+    threading.Thread(target=heatmaps.run, args=(stats, mailbox), daemon=True).start()
 
-    mode = "memory"
+    mode = args.mode
+    heatmaps.wanted = mode == "anomaly"
     selected: int | None = None
     hits: list = []
     baselines: dict = {}
@@ -397,14 +449,15 @@ def main() -> None:
             else:
                 if idx % 30 == 0:
                     baselines.clear()
-                anchor = stats.get("anchor")
                 _draw_anomaly(frame, views, engine, baselines,
-                              anchor[1] if anchor is not None else None)
+                              heatmaps.get() if heatmaps else None)
 
             shown += 1
             elapsed = time.perf_counter() - t0
             c = engine.counts
             seg_ms = f"  outlines {shapes_of.ms:.0f} ms" if shapes_of else ""
+            if mode == "anomaly":
+                seg_ms += f"  heatmaps {heatmaps.ms:.0f} ms"
             hud = (f"{mode.upper()}  display {shown / max(elapsed, 1e-6):.1f} fps  pipeline {stats['pipeline_ms']:.0f} ms{seg_ms}"
                    f" (skips {stats['skipped']})  objects {len(views)}  known {c.rebound}  new {c.created}")
             cv2.putText(frame, hud, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
@@ -414,6 +467,8 @@ def main() -> None:
                 break
             if key in MODES:
                 mode = MODES[key]
+                # The heatmap worker is idle unless its mode is on screen.
+                heatmaps.wanted = mode == "anomaly"
             if args.max_frames is not None and idx >= args.max_frames:
                 break
     finally:
