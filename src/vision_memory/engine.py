@@ -19,6 +19,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass, field
 
+import cv2
 import numpy as np
 
 from vision_memory.anomaly import AnomalyDetector, build_detector
@@ -28,6 +29,7 @@ from vision_memory.config import (
     TrackerConfig, VideoConfig,
 )
 from vision_memory.detector import Detector, YoloOnnxDetector
+from vision_memory.heatmap import PatchAnomaly, PatchAnomalyDetector
 from vision_memory.memory import Identity, VisualMemory
 from vision_memory.reid import Verifier
 from vision_memory.reidentifier import IdentityBinder, ReIdentifier
@@ -109,6 +111,10 @@ class VisionEngine:
         # a backpack" are different questions, and the routed vectors of
         # different kinds live in disjoint slices anyway.
         self._anomaly: dict[str, tuple[AnomalyDetector, int]] = {}
+        # Patch-level anomaly needs the general encoder's spatial tokens, so
+        # it is built lazily and only when a caller asks to see WHERE.
+        self._patch_models: dict[str, tuple[PatchAnomalyDetector, int]] = {}
+        self._patch_bank: dict[str, list[np.ndarray]] = {}
         self._last_frame_idx = -1
         self._lock = threading.Lock()
 
@@ -247,6 +253,58 @@ class VisionEngine:
         vectors = np.concatenate([self.memory.exemplar_vectors(i.id) for i in self.memory.all_identities()
                                   if i.label == label and len(self.memory.exemplar_vectors(i.id))])
         return np.asarray(model.score(vectors), dtype=np.float32)
+
+    def _patch_encoder(self):
+        """The general encoder, whichever describer holds it."""
+        general = getattr(self.describer, "general", self.describer)
+        return getattr(general, "encoder", None)
+
+    def heatmap(self, frame_bgr: np.ndarray, view: "TrackView") -> "PatchAnomaly | None":
+        """Where this object is unusual for its kind, or None until enough is known.
+
+        The crop is described patch by patch and each patch scored against the
+        nearest normal patch of that label. Normals are collected from the same
+        live stream: an object the system has watched for a while and never
+        questioned is what "normal" means here, which is the only definition
+        available without a labelled set of good examples.
+        """
+        encoder = self._patch_encoder()
+        if encoder is None or not hasattr(encoder, "encode_patches"):
+            return None
+        x1, y1, x2, y2 = (int(v) for v in view.box)
+        h, w = frame_bgr.shape[:2]
+        x1, y1 = max(x1, 0), max(y1, 0)
+        x2, y2 = min(x2, w), min(y2, h)
+        if x2 - x1 < 16 or y2 - y1 < 16:
+            return None
+        crop = cv2.cvtColor(frame_bgr[y1:y2, x1:x2], cv2.COLOR_BGR2RGB)
+        try:
+            patches = encoder.encode_patches([crop])[0]
+        except Exception:
+            return None
+
+        with self._lock:
+            bank = self._patch_bank.setdefault(view.label, [])
+            # Normal is what this camera keeps seeing. Any object the binder
+            # has committed to an identity qualifies - it has been observed
+            # enough times to be worth a number. Requiring `not is_new` was
+            # measured to define normal out of existence: on a fresh memory
+            # every identity is new, so the bank never filled and no heatmap
+            # was ever produced.
+            if view.identity_id is not None and len(bank) < 40:
+                bank.append(patches)
+            cached = self._patch_models.get(view.label)
+            if cached is None or (len(bank) >= cached[1] + 8 and len(bank) <= 40):
+                if len(bank) < 3:
+                    return None
+                model = PatchAnomalyDetector()
+                try:
+                    model.fit(np.concatenate([b.reshape(-1, b.shape[-1]) for b in bank]))
+                except ValueError:
+                    return None
+                self._patch_models[view.label] = (model, len(bank))
+                cached = self._patch_models[view.label]
+        return cached[0].score(patches)
 
     # ---------------------------------------------------------------- close
     def close(self) -> None:

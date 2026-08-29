@@ -38,6 +38,7 @@ from vision_memory.config import (  # noqa: E402
     load_reid_config, load_tracker_config, load_video_config,
 )
 from vision_memory.engine import TrackView, VisionEngine  # noqa: E402
+from vision_memory.heatmap import overlay  # noqa: E402
 from vision_memory.segmenter import YoloSegmenter, outline  # noqa: E402
 
 MODES = {ord("1"): "memory", ord("2"): "search", ord("3"): "anomaly"}
@@ -266,7 +267,15 @@ def _draw_search(frame, views, selected: int | None, hits) -> None:
         cv2.putText(frame, "  (nothing stored of this kind yet)", (10, y + 22), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
 
-def _draw_anomaly(frame, views, engine: VisionEngine, baselines: dict) -> None:
+def _draw_anomaly(frame, views, engine: VisionEngine, baselines: dict, source: np.ndarray | None = None) -> None:
+    """Colour each object by how unusual it is, and paint WHERE when known.
+
+    The box colour ranks the object against its own kind. The heatmap inside
+    it comes from the patch model: each 14x14 patch scored against the nearest
+    normal patch of that label, so a strange region glows and an ordinary one
+    stays dark. Painted on the frame the pipeline actually saw, since the
+    display's frame may have moved on.
+    """
     for v in views:
         x1, y1, x2, y2 = (int(c) for c in v.box)
         if v.anomaly is None:
@@ -280,8 +289,16 @@ def _draw_anomaly(frame, views, engine: VisionEngine, baselines: dict) -> None:
         # rank against the label's own normals: 0 = ordinary, 1 = stranger than everything stored
         pct = float((base < v.anomaly).mean()) if len(base) else 0.0
         colour = (0, int(255 * (1 - pct)), int(255 * pct))
+        heat = engine.heatmap(source if source is not None else frame, v)
+        h, w = frame.shape[:2]
+        cx1, cy1, cx2, cy2 = max(x1, 0), max(y1, 0), min(x2, w), min(y2, h)
+        if heat is not None and cx2 - cx1 > 8 and cy2 - cy1 > 8:
+            frame[cy1:cy2, cx1:cx2] = overlay(frame[cy1:cy2, cx1:cx2], heat, strength=0.4)
+            label = f"{v.label} unusual {pct:.0%}  worst patch {heat.score:.2f}"
+        else:
+            label = f"{v.label} unusual {pct:.0%}"
         cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2)
-        cv2.putText(frame, f"{v.label} unusual {pct:.0%}", (x1, max(y1 - 4, 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, colour, 1)
+        cv2.putText(frame, label, (x1, max(y1 - 4, 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, colour, 1)
 
 
 def main() -> None:
@@ -380,7 +397,9 @@ def main() -> None:
             else:
                 if idx % 30 == 0:
                     baselines.clear()
-                _draw_anomaly(frame, views, engine, baselines)
+                anchor = stats.get("anchor")
+                _draw_anomaly(frame, views, engine, baselines,
+                              anchor[1] if anchor is not None else None)
 
             shown += 1
             elapsed = time.perf_counter() - t0
