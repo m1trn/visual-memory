@@ -90,12 +90,10 @@ class ReIdentifier:
         """Bind these observations into the best matching identity, or create one.
 
         ``box`` is where the object is now. Appearance alone is weak across a
-        gap — measured on this footage, two views of the same person a few
-        seconds apart score barely better than two different people — but an
-        object reappearing where another vanished moments earlier is strong
-        evidence on its own. This is exactly the continuity the tracker uses and
-        re-identification was discarding, which is why the tracker handles a
-        brief occlusion better than re-identification does.
+        gap, since two views of the same person seconds apart can score little
+        better than two different people, but an object reappearing where
+        another vanished moments earlier is strong evidence on its own. Using
+        both is what lets a brief occlusion resolve correctly.
         """
         obs = _stack_unit(embeddings, self.memory.dim)
         best_id, best_score = self._best_candidate(
@@ -330,9 +328,8 @@ class ReIdentifier:
         over-fetches by the widest identity's exemplar count, so an identity
         cannot crowd itself out of the result. What this width does control is
         how far down the ranking the verifier is allowed to look, and a return
-        does not always rank first — measured against 18 stored identities, a
-        shortlist of 5 held the correct one 89% of the time, so one query in
-        nine was decided without the right answer present at all.
+        does not always rank first, so a shortlist too short can decide a query
+        without the correct identity present in it at all.
         """
         if len(self.memory) == 0:
             return []
@@ -400,9 +397,8 @@ class BindingEvents:
 class IdentityBinder:
     """Keeps live tracks bound to identities, frame by frame.
 
-    Three scripts carried their own copy of this loop and the copies drifted:
-    one fix landed in the demo but not the evaluation, another landed
-    everywhere but was wrong in all three at once. The rules live here now.
+    The single home for the binding rules, so every caller - demo, evaluation
+    and live engine alike - identifies objects by exactly the same logic.
 
     A track is identified as soon as it has enough appearance evidence, while
     it is still being watched — a viewer cannot be told who somebody is only
@@ -632,10 +628,9 @@ class IdentityBinder:
     def _looks_like_a_static_object(self, track) -> bool:
         """Weakly detected AND never moved: a post, not a person.
 
-        Peak confidence alone was measured and rejected: a bar of 0.6 stopped a
-        sign post but hid real, distant, low-confidence people. Adding the
-        motion test keeps those people - they walk - and still refuses the
-        things that never do.
+        Confidence alone would also reject genuine distant people, who are
+        detected weakly. The motion test keeps them, since they walk, and still
+        refuses the things that never do.
         """
         if track.peak_score >= self.min_new_identity_confidence:
             return False

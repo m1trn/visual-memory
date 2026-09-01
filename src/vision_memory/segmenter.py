@@ -1,11 +1,9 @@
 """Silhouettes for the display: YOLO11-seg masks, decoded in numpy.
 
-For drawing only. Masked crops were measured to make re-identification WORSE
-(held-out AUROC 0.979 -> 0.962: the person embedder was trained on rectangles
-with background, and a cut-out silhouette is outside its training
-distribution), so nothing here touches the embedding path. What an outline
-buys is on screen: two people who overlap get one box each but two clearly
-separate shapes.
+For drawing only: nothing here touches the embedding path, since the person
+embedder is trained on rectangles with their background and reads a cut-out
+silhouette worse than a plain crop. What an outline buys is on screen: two
+people who overlap get one box each but two clearly separate shapes.
 
 YOLO11-seg emits ``(1, 4 + C + 32, A)`` predictions plus a ``(1, 32, H/4,
 W/4)`` prototype bank. Each detection's 32 coefficients are a recipe for

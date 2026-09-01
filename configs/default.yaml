@@ -18,24 +18,14 @@ detector:
 
   model_path: data/models/yolo11n_768.onnx
 
-  input_size: 768          # the ONNX graph is exported at a fixed input size, so this must match the
-                           # file above. 768 is the clip's native width: at 640 the frame was letterboxed
-                           # DOWN, discarding pixels already in hand, and people bunched at a distance are
-                           # only 17-27 px wide. Measured over 40 frames: 640 finds 5.1 people/frame in
-                           # 161 ms, 768 finds 5.7 in 201 ms, 960 finds 4.5 in 294 ms. 960 is worse as
-                           # well as slower because YOLO11n is trained at 640 and upsampling puts people
-                           # at a scale it never saw. Re-export with `yolo export format=onnx imgsz=768`.
-                           # Measured end to end against labels (IDF1 / switches / MOTA, YouTu embedder):
-                           #   768n  spawn 0.5   MOT17-02 53.6/10/33.5   held-out 81.3/ 9/61.9  <- shipped
-                           #   768n  spawn 0.6            50.1/ 4/29.0            82.7/10/69.0
-                           #   1280n spawn 0.6            57.6/12/36.0            79.0/16/62.7   2.8x cost
-                           #   s768  spawn 0.5            57.0/17/36.7            71.6/13/54.6   2.2x cost
-                           # Bigger or sharper detectors find more distant people (MOT17-02 up) but
-                           # their extra strong false positives spawn tracks that steal matches on
-                           # big easy people (held-out down). Nothing dominates; 768n keeps the best
-                           # switch counts on both. Use yolo11n_1280.onnx / input_size 1280 for
-                           # footage of distant crowds. A sign post the 768n calls a person at 0.36
-                           # survives every setting except ones that cost real people.
+  input_size: 768          # must match the exported ONNX graph, whose input size is fixed. Match it to
+                           # the footage's own width where possible: letterboxing a frame DOWN discards
+                           # detail that distant people cannot spare, while upscaling past the size the
+                           # network was trained at puts them at a scale it never saw.
+                           # Re-export with `yolo export format=onnx imgsz=<size>`.
+                           # A larger detector finds more distant people but also more strong false
+                           # positives, which spawn tracks that steal matches from easy nearby ones.
+                           # Use yolo11n_1280.onnx with input_size 1280 for footage of distant crowds.
 
   conf_threshold: 0.1
 
@@ -46,14 +36,13 @@ detector:
   num_threads: 0           # 0 = onnxruntime default
 
 tracker:
-  max_age: 12             # frames without a match before a track is lost. A person walking behind
-                          # something is invisible to the detector for ~12 frames; at 6 the track
-                          # expired first and came back as a new id. Raising it doubles median track
-                          # life (5.7s -> 11.1s) and cuts identities 25 -> 20 with coverage unchanged.
-                          # Only safe because stale tracks are no longer drawn and the appearance veto
-                          # now blocks the bad re-associations a long memory would otherwise allow.
+  max_age: 12             # frames without a match before a track is lost. Must outlast a normal
+                          # occlusion - a person walking behind something is invisible to the detector
+                          # for roughly this long - or they return as a new id. A long memory is only
+                          # safe alongside the appearance veto, which blocks the wrong re-associations
+                          # it would otherwise permit.
 
-  min_hits: 2             # matches before a track is drawn; 1 admits detector junk (67 ids, 37 spurious), 3 only adds latency
+  min_hits: 2             # matches before a track is drawn; 1 admits detector junk, 3 only adds latency
 
   iou_threshold: 0.3      # IoU at or above this accepts a match outright; below it the centre gate decides
 
@@ -66,22 +55,17 @@ tracker:
                             # so raising that cadence needs this raised too (roughly 0.7 x the gap in frames).
 
   measurement_noise: 0.25   # how much the filter distrusts a detection, relative to its own prediction.
-                            # Below 1.0 means detections win: the corrected box lands on the detection
-                            # (overlap 0.929 -> 0.966) instead of trailing two thirds of the way there,
-                            # which is what made a box look slow to recover after an occlusion. Pushing
-                            # it lower still fits velocity to detection jitter and costs track ids.
+                            # Below 1.0 means detections win, so a corrected box lands on its detection
+                            # rather than trailing part of the way towards it. Lower still fits the
+                            # track's velocity to detection jitter, which costs ids.
 
   min_exemplar_confidence: 0.3  # a detection below this still associates, but never becomes part of
                                 # the record of what somebody looks like. Confidence is also a
-                                # statement about the BOX: measured against MOT17-02's labels a
-                                # detection under 0.3 overlaps its person by 0.247 mean against 0.843
-                                # above 0.7, and that weak band is 56% of all detections, so without
-                                # this a third of a background gets filed as somebody's appearance.
-                                # Telling real returns apart, AUROC/recovered: 0.942/69% at 0.1
-                                # against 0.962/71% at 0.3; held out, 0.976/80% against 0.974/91%.
-                                # Gating ASSOCIATION on it instead was measured and was worse: a weak
-                                # box is most useful exactly when someone is half-hidden and geometry
-                                # cannot arbitrate, which is what ByteTrack's second pass is for.
+                                # statement about the BOX: a weak detection sits mostly on background,
+                                # which must not be filed as somebody's appearance. Association is
+                                # deliberately NOT gated on it - a weak box is most useful exactly
+                                # when someone is half-hidden and geometry cannot arbitrate, which is
+                                # what the second association pass is for.
 
   high_conf: 0.5           # detections >= this go to the first association pass
 
@@ -90,17 +74,16 @@ tracker:
   veto_views: 3           # how many recent observations a track offers the veto; a running mean
                           # resembles none of the views it averages, so raw observations compare better
   claim_margin: 0.0       # refuse a match when a rival track's appearance fits the detection this much
-                          # better. Measured too blunt: at 0.10 it cuts id theft 20 -> 6 but costs 8 extra
-                          # identities and 2% coverage, so it is off. Appearance in the cost does the same
-                          # job more cheaply.
+                          # better. Off: appearance inside the association cost does the same job
+                          # without the extra identities this costs when it fires.
   appearance_veto: 0.4    # reject a match whose appearance is implausible for the same object.
                           # ONLY ACTIVE when the caller passes embeddings into update(); track_demo and
-                          # reid_demo do not, so it is inert there. At 0.5 it costs identities (18 -> 20)
-                          # by rejecting correct matches whose embedding is briefly unstable.
-  appearance_weight: 0.5  # share of the association cost taken from appearance rather than geometry.
+                          # reid_demo do not, so it is inert there. Raising it starts rejecting correct
+                          # matches whose embedding is briefly unstable.
+  appearance_weight: 0.5  # share of the association cost taken from appearance rather than geometry:
+                          # lambda in cost = (1-lambda)*(1-IoU) + lambda*(1-cosine); 0 = motion only.
                           # Two overlapping people have near-identical geometry, so this is what stops
-                          # one of them claiming the other's id: measured id theft 20 -> 14 with identity
-                          # count, coverage and track lifetime all unchanged. Needs embeddings at update().  # lambda in cost = (1-lambda)*(1-IoU) + lambda*(1-cosine); 0 = motion only
+                          # one of them claiming the other's id. Needs embeddings at update().
 
   embed_every_n: 2       # schedule for due_for_embedding(); callers passing embeddings into update() rate-limit themselves. 0 disables
 
@@ -120,52 +103,32 @@ reid:
   verifier_weights: data/models/reid_verifier_mlp.npz  # produced by scripts/reid_train.py
   min_pair_gap: 2         # observations apart, so a positive pair is not two near-identical frames
   max_pairs_per_track: 200 # cap per track, or one long-lived object dominates the positive class
-  max_false_merge_rate: 0.02 # share of provably-different pairs the binding boundary may accept.
-                            # Showing a viewer the wrong name is worse than failing to recognize
-                            # someone, so the boundary is set by this rather than by balanced error.
-                            # 0.02 was argued for, never measured; scored against MOT17-02's labelled
-                            # identities it puts the boundary at 0.704, which is below the useful band.
-                            # Sweeping the boundary end to end: no re-id at all gives IDF1 45.3% with
-                            # 30 identity switches, and 0.704 gives 45.9% with 32 - barely above doing
-                            # nothing, and swapping MORE numbers. 0.720-0.775 is a flat optimum at
-                            # 46.1-46.5% with 29 switches. Below 0.70 re-id is actively destructive:
-                            # 0.55 collapses to 36.9% with 53 switches, far worse than not binding at
-                            # all, because a wrong merge costs more identity than a correct recovery
-                            # gains. This rate is NOT independent of observation_quantile: raising
-                            # that to 0.9 lifts every score, so the same 2% now lands at 0.755 where
-                            # it once landed at 0.704. Re-swept at that quantile, 0.723-0.773 is flat
-                            # at 47.0-47.3% IDF1 with 29 switches and 0.800 collapses back to the
-                            # floor, so the boundary is placed mid-band rather than at the peak.
+  max_false_merge_rate: 0.02  # share of different-person comparisons allowed to clear the boundary.
+                            # The boundary is derived from this rate rather than set directly, so it
+                            # re-fits whenever the embedder or the data changes. Too low a rate puts
+                            # the boundary under the useful band, where wrong merges cost more
+                            # identity than correct recoveries gain and re-identification does more
+                            # harm than leaving it off. NOT independent of observation_quantile:
+                            # raising that lifts every score, so the same rate lands higher.
   swap_margin: 0.08       # two people on screen who have each other's numbers swap them back when
                           # EACH fits the other's record better than their own by this much. Takeover
                           # only runs when a track is first identified, so without this a swap made
-                          # during a crossing was permanent until one of them left. The condition is
-                          # mutual on purpose: one confused frame cannot flip two people. 0 disables.
-                          # Measured: fires 0 times on both labelled sequences and on the demo clip -
-                          # results are bit-identical with it off. Kept because the gap it closes is
-                          # real and the condition makes it safe, but it has not yet earned a number.
+                          # during a crossing lasts until one of them leaves. The condition is mutual
+                          # on purpose: one confused frame cannot flip two people. 0 disables.
   min_new_identity_confidence: 0.0  # OFF. A track that never peaked this high AND never moved
-                          # still_object_motion box widths would be refused a NEW identity. Aimed
-                          # at a sign post the detector calls a person at 0.53. Measured three ways
-                          # on labels and lost every time: peak alone at 0.6 (held-out 65.7% -> 64.4%,
-                          # switches 21 -> 25); peak 0.6 + motion (MOT17-02 53.6%/10 -> 51.8%/25);
-                          # peak 0.55 + motion (53.6%/10 -> 53.3%/17, held-out neutral). Distant
-                          # real people have not moved half a box width when they get their second
-                          # view, so any deferral fragments them. A false-positive post is the
-                          # detector's error and has to be fixed there.
+                          # still_object_motion box widths would be refused a NEW identity, which
+                          # aims at static objects the detector calls people. Off because distant
+                          # real people are also detected weakly and have not moved far by their
+                          # second view, so any deferral fragments them; a false positive is the
+                          # detector's error and belongs there.
   still_object_motion: 0.5  # box widths a weak track must have travelled to count as a person; only
                           # consulted when the bar above is on.
   claim_margin: 0.08      # how much better a match must be to take an identity from its current
                           # holder. Two similar-looking people both score against one stored
                           # record, and without this whichever appeared first keeps it for good.
   merge_margin: 0.15      # extra evidence needed to merge two existing records, beyond what a fresh
-                          # binding needs. Merging rewrites history, so it should be the harder call.
-                          # Set from the labels, not argument: at 0.05 reconsider's merges made
-                          # switches WORSE on both labelled sequences (29 -> 34 and 23 -> 26 with
-                          # IDF1 flat) - the records it joined were ones the annotator separates. At
-                          # 0.15 every harmful merge is refused and the results are identical to not
-                          # reconsidering at all, so the mechanism remains only for blatant
-                          # duplicates that clear a 0.905 score.
+                          # binding needs. Merging rewrites history, so it is deliberately the harder
+                          # call: set high enough that only blatant duplicates are joined.
   reconsider_every: 15    # frames between revisiting a track's identity as its evidence grows. An
                           # identity assigned from two observations must be allowed to improve, or an
                           # object called new can never reclaim the record of its earlier visit.
@@ -174,64 +137,40 @@ reid:
                           # space and time is strong, and is the evidence the tracker uses and re-id lacked.
   spatial_scale: 2.0      # box widths over which that continuity evidence decays
   temporal_scale: 2.0     # seconds over which it decays
-  observation_quantile: 0.9  # how much of a track must agree with a stored identity. Chosen on
-                            # hand-labelled
-                            # returns, where the earlier reasoning (a quantile is more robust than a
-                            # max) turns out to cost accuracy rather than buy it. A track that turns
-                            # or is partly hidden produces observations that genuinely match nothing
-                            # stored, and a median lets those outvote the views that do match.
-                            # Separating real returns from different people, K=5: AUROC 0.908 at 0.5,
-                            # 0.926 at 0.75, 0.942 at 0.9, 0.951 at 1.0 - and on a sequence held out
-                            # of this choice, 0.968 / 0.971 / 0.976 / 0.988, monotone on both.
-                            # Returns recovered at a 1% false-merge budget rise 50% -> 56% and,
-                            # held out, 70% -> 80%.
-                            # Stops short of 1.0, which scores best on that data but lets a SINGLE
-                            # frame bind a whole track. The labelled evaluation cannot see that risk:
-                            # it attributes each observation to a person separately, so a track that
-                            # swapped identity part-way contributes to two people and never appears
-                            # as a mixed query. test_a_lone_lucky_frame_does_not_carry_the_track
-                            # covers exactly that case, and 1.0 fails it while 0.9 passes.
+  observation_quantile: 0.9  # how much of a track must agree with a stored identity. A track that
+                            # turns or is partly hidden produces observations that genuinely match
+                            # nothing stored, so a low quantile lets those outvote the views that do
+                            # match. Stops short of 1.0, which would let a SINGLE lucky frame bind a
+                            # whole track.
   test_fraction: 0.3      # held out BY TRACK - a track must never contribute to both sides
   seed: 0
 
 search:
   default_k: 20           # identities the index shortlists before the verifier decides. Counts
                           # identities, not stored vectors - memory.search over-fetches rows so an
-                          # identity cannot crowd itself out. At 5 the correct identity was present
-                          # only 89% of the time on 18 stored identities, and a candidate that is
-                          # never shortlisted can never be matched however good the threshold is; 20
-                          # holds it at 100%. Still a shortlist: 30 candidates offered out of 1018.
+                          # identity cannot crowd itself out. A candidate never shortlisted can never
+                          # be matched however good the threshold is, so this is set well above the
+                          # number of plausible matches rather than tight.
 
 appearance:
   model: reid             # reid | encoder. A network trained to tell people apart beats a general
-                          # encoder at this job and is far smaller: measured across a 3 s gap, recall
-                          # at 5% false accepts rises 62.1% -> 83.7% and cost falls ~120 -> 11 ms/crop.
-  reid_model_path: data/models/person_reid_youtu_2021nov.onnx  # Tencent YouTu person re-id (OpenCV Zoo, 107 MB,
-                          # 768-dim, ~2x the cost of OSNet x0.25 per crop; embedding runs off the
-                          # hot path). Chosen on labelled returns: held-out MOT17-09 IDF1 66.6% -> 81.3%
-                          # and switches 19 -> 9 against OSNet x0.25 at each model's own calibrated
-                          # boundary; MOT17-02 46.4% -> 53.6%, switches 29 -> 10. The tracker's own
-                          # association also improves (held-out floor 58.5% -> 65.1%) because the
-                          # appearance veto sees the same vectors. Its scores sit on a different scale
-                          # (boundary 0.593, not 0.755) - the calibration is re-fitted from
-                          # data/reid_pairs.pkl by reid_bench.py, which must be re-run after any swap.
-                          # OSNet x0.25 (data/models/osnet_x0_25_msmt17.onnx) remains selectable.
+                          # encoder at this job and is far smaller and faster.
+  reid_model_path: data/models/person_reid_youtu_2021nov.onnx  # Tencent YouTu person re-id (OpenCV Zoo,
+                          # 107 MB, 768-dim). Embedding runs off the hot path. Its scores sit on their
+                          # own scale, so the boundary is re-fitted from data/reid_pairs.pkl by
+                          # reid_bench.py, which must be re-run after any embedder swap.
   projection_weights: ""    # path to a trained 768->k projection (scripts/reid_project.py); empty = off.
                           # Changes the person vector, so memory starts empty when switched on.
-                          # Measured 2026-08-28, 768 -> 128 trained on 300 labelled people: same
-                          # separation on held-out returns (AUROC 0.982 vs 0.980) at a sixth of the
-                          # size, but end to end at the calibrated boundary IDF1 is lower on both
-                          # sequences (held-out 79.5% vs 81.3%, switches 5 vs 9; tuned 50.6% vs
-                          # 53.6%). Off by default: accuracy first. Turn on when memory size or
-                          # search cost matters more than ~2 IDF1 points.
+                          # A trained projection holds its separation on unseen returns at a
+                          # fraction of the size, but costs a little end-to-end accuracy. Off by
+                          # default: turn it on when memory and search cost matter more.
   specialist_labels: [person]  # classes the re-id network is trained for. It is much better than
                                # the general encoder on these and much worse on anything else, so
                                # everything not listed here keeps using the general encoder.
   colour_weight: 0.4      # share of the descriptor taken from clothing colour rather than learned
-                          # features. On 30 px pedestrian crops two strangers in dark coats look alike
-                          # to the encoder; colour separates them. Measured across a 3 s gap: learned
-                          # features alone AUROC 0.912 / 62.1% recall at 5% false accepts, fused 0.930
-                          # / 68.8%. 0 disables and falls back to the learned features alone.
+                          # features. On small pedestrian crops two strangers in dark coats look alike
+                          # to the encoder, and colour separates them; the two halves are
+                          # complementary rather than redundant. 0 falls back to learned features.
   colour_bands: 2         # horizontal bands the colour histogram is split into. One band cannot tell
                           # "dark jacket, blue jeans" from "dark jacket, dark trousers"; two can.
   deep_upper_fraction: 0.6 # the learned half sees only the top of the box, where identity lives; the
@@ -268,13 +207,12 @@ anomaly:
 language:                 # finding remembered objects by description
   model_name: ViT-B-32
   pretrained: laion2b_s34b_b79k
-                          # Measured on this CPU rather than assumed: MobileCLIP2-S0 is the smaller
-                          # model (75M parameters against 151M) and ran at 112 ms/crop against this
-                          # one's 44 ms, because MobileCLIP is tuned for phone neural engines rather
-                          # than desktop PyTorch. Retrieval was correct for both on 35x80 crops.
+                          # Chosen for speed on a CPU. A smaller architecture is not automatically
+                          # faster: models designed for phone neural engines can run slower under
+                          # desktop PyTorch than a larger conventional transformer.
   batch_size: 16
   min_score: 0.22         # cosine below which a hit is not a match but the least-bad row in the
                           # index. Text-image cosine lives on a far tighter scale than image-image:
-                          # a good hit on our own crops sits near 0.28, not near 0.8. Without a floor
-                          # an empty scene still returns k confident-looking answers, so this is what
+                          # a good hit sits near 0.28, not near 0.8. Without a floor an empty scene
+                          # still returns k confident-looking answers, so this is what
                           # makes "nothing here matches that" expressible.

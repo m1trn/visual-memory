@@ -1,13 +1,10 @@
 """Reading MOTChallenge sequences: frames paired with hand-labelled identities.
 
-Every accuracy claim this project has made so far was scored against ground
-truth derived from its own tracker, and that circularity has produced wrong
-answers repeatedly — two tracks scoring 0.896 turned out to be a woman in a
-light blue jacket and a man in a dark coat. A MOTChallenge sequence carries a
-human's answer key instead: each frame lists the boxes that are really there
-and, decisively, the identity each one belongs to, held consistent across
-occlusions and re-entries. That last column is the only thing that can say
-whether re-identification actually re-identifies.
+A MOTChallenge sequence carries a human's answer key: each frame lists the
+boxes that are really there and, decisively, the identity each one belongs to,
+held consistent across occlusions and re-entries. That last column is what
+makes it possible to score whether re-identification actually re-identifies,
+rather than scoring the system against its own output.
 
 Layout of a sequence directory, unchanged from the official archives::
 

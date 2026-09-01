@@ -168,10 +168,9 @@ def _worker(engine: VisionEngine, mailbox: LatestFrame, stats: dict) -> None:
 class Silhouettes:
     """Outlines for the display, computed on their own thread.
 
-    Drawing only. Masked crops were measured to make re-identification worse,
-    so this never touches the embedding path: it runs a segmentation model on
-    the newest frame whenever free and hands the display whatever it last
-    produced. Each outline is matched to a track by box overlap, so the shape
+    Drawing only, never touching the embedding path: it runs a segmentation
+    model on the newest frame whenever free and hands the display whatever it
+    last produced. Each outline is matched to a track by box overlap, so the shape
     follows the number the binder assigned.
     """
 
@@ -228,11 +227,10 @@ def _iou_row(box: np.ndarray, boxes: np.ndarray) -> np.ndarray:
 class Heatmaps:
     """Patch-anomaly maps for the display, computed on their own thread.
 
-    Each map costs a vision-transformer forward pass over the crop - hundreds
-    of milliseconds. Computing them where they are drawn put that cost on the
-    display thread once per object per frame, which is what made anomaly mode
-    crawl. Here one worker walks the tracks it has, newest processed frame
-    only, and the display paints whatever is ready.
+    Each map costs a vision-transformer forward pass over the crop, hundreds
+    of milliseconds, so it cannot be computed where it is drawn. One worker
+    walks the tracks of the newest processed frame and the display paints
+    whatever is ready.
     """
 
     def __init__(self, engine: VisionEngine) -> None:
@@ -310,10 +308,10 @@ def type_key(key: int, query: str) -> tuple[str, bool, bool]:
 class Describer:
     """Gives each new identity one semantic description, on its own thread.
 
-    A CLIP pass costs about 45 ms per crop. Doing it where the frame is drawn
-    would cost the display exactly what the heatmaps used to; doing it once per
-    identity rather than once per frame is what makes it cheap at all, since
-    the sentence "a person in a red jacket" does not stop matching as they walk.
+    A description costs a full model pass over the crop, far too slow to do
+    while drawing. Running it once per identity rather than once per frame is
+    what makes it cheap: the sentence "a person in a red jacket" does not stop
+    matching as they walk.
     """
 
     def __init__(self, engine: VisionEngine) -> None:

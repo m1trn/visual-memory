@@ -6,8 +6,7 @@ cannot do: its vectors are deliberately INSTANCE vectors, trained so two people
 in similar coats land apart. Text search needs the opposite - "a red backpack"
 must match every red backpack - so a space that is good at telling individuals
 apart is by construction bad at grouping them by kind. One space cannot serve
-both, and pretending otherwise would damage the re-identification that has been
-measured to work.
+both.
 
 So this is a second, parallel space. A CLIP-family model embeds images and text
 into one shared vector space; the image side describes a stored identity, the
@@ -15,12 +14,9 @@ text side describes what the user typed, and the match is the same cosine
 distance used everywhere else in this project. The vectors live in their own
 index keyed by identity id, so nothing about the identity path changes.
 
-Model choice was measured on this CPU rather than assumed. MobileCLIP2-S0 is
-the smaller model (75M parameters against 151M) and was the obvious candidate,
-but it ran at 112 ms/crop against ViT-B-32's 44 ms: MobileCLIP's architecture is
-tuned for phone neural engines, not for desktop PyTorch. Retrieval on real
-crops - a 35x80 pixel median - was correct for both. The faster, larger model
-wins on the only axis that separated them.
+The default model is chosen for speed on a CPU. A smaller architecture is not
+automatically faster here: models designed for phone neural engines can run
+slower under desktop PyTorch than a larger conventional transformer.
 """
 
 from __future__ import annotations
@@ -40,7 +36,7 @@ class LanguageConfig:
     batch_size: int = 16
     # Cosine below this is not a match but the least-bad row in the index.
     # Text-image cosine lives on a much tighter scale than image-image: a good
-    # hit measured on our own crops sits near 0.28, not near 0.8.
+    # hit sits near 0.28, not near 0.8.
     min_score: float = 0.22
 
 

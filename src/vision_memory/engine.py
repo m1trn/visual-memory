@@ -125,9 +125,8 @@ class VisionEngine:
         self._semantic: SemanticIndex | None = None
         self._described: set[int] = set()
         # One thumbnail per identity, so an object can still be described after
-        # it has walked away. Memory stores vectors, not pictures, and CLIP
-        # needs a picture - without this, switching to language search late
-        # leaves everybody seen beforehand permanently unsearchable.
+        # it has walked away. Memory stores vectors, not pictures, and the
+        # language model needs a picture.
         self._thumbnails: dict[int, tuple[int, np.ndarray]] = {}
         self._lock = threading.Lock()
 
@@ -154,9 +153,8 @@ class VisionEngine:
         frames, so a slow pipeline loses smoothness but not identities.
         """
         # The models run OUTSIDE the lock: they take hundreds of milliseconds
-        # and touch no shared state, and the display thread must be able to
-        # read `view()` while they run. Measured: holding the lock here pinned
-        # the display to the pipeline's rate (0.6 fps against a 30 fps camera).
+        # and touch no shared state, so a display thread can read `view()` at
+        # its own rate while they run.
         detections = self.detector.detect(frame_bgr)
         embeddings = describe_detections(
             self.describer, frame_bgr, detections, self.tracker_cfg.min_exemplar_confidence
@@ -299,12 +297,9 @@ class VisionEngine:
 
         with self._lock:
             bank = self._patch_bank.setdefault(view.label, [])
-            # Normal is what this camera keeps seeing. Any object the binder
-            # has committed to an identity qualifies - it has been observed
-            # enough times to be worth a number. Requiring `not is_new` was
-            # measured to define normal out of existence: on a fresh memory
-            # every identity is new, so the bank never filled and no heatmap
-            # was ever produced.
+            # Normal is what this camera keeps seeing: any object the binder
+            # has committed to an identity, since that means it has been
+            # observed enough times to be worth a number.
             if view.identity_id is not None and len(bank) < 40:
                 bank.append(patches)
             cached = self._patch_models.get(view.label)
@@ -337,10 +332,9 @@ class VisionEngine:
         """Give newly-bound identities a semantic description. Returns how many.
 
         Called with the frame the pipeline last processed. Each identity is
-        described ONCE, from the first crop good enough to be worth embedding:
-        a CLIP pass costs about 45 ms, and re-describing somebody every frame
-        would buy nothing - what the sentence "a person in a red jacket" has to
-        match does not change as they walk.
+        described once, from the first crop large enough to read: what the
+        sentence "a person in a red jacket" has to match does not change as
+        they walk, so the description is computed once and kept.
         """
         model = self._language_model()
         h, w = frame_bgr.shape[:2]
@@ -366,10 +360,9 @@ class VisionEngine:
     def _keep_thumbnails(self, frame_bgr: np.ndarray, views: "list[TrackView]") -> None:
         """Remember the largest crop seen of each identity, small and in RAM.
 
-        Kept for every mode, not just language search, because the crop has to
-        exist BEFORE the user asks for it - that is the whole point. The cost
-        is one resize of a small region per bound object per pass, and the
-        biggest view is kept because a bigger crop is the one CLIP can read.
+        Kept in every mode, because the crop has to exist before a caller asks
+        to describe it. The largest view is the one kept, being the one a model
+        can read most from; the cost is one resize per bound object per pass.
         """
         h, w = frame_bgr.shape[:2]
         for v in views:
@@ -392,12 +385,11 @@ class VisionEngine:
     def backfill_descriptions(self) -> int:
         """Describe every remembered identity that has never been described.
 
-        Language search only runs its describer while its mode is on screen, so
-        an identity bound five minutes before the user pressed the key has no
-        CLIP vector and cannot be found - even though re-identification knows
-        exactly who they are. This catches those up from the kept thumbnails,
-        at roughly 45 ms each, so search covers everyone in memory rather than
-        only those seen since the switch.
+        The describer only runs while language mode is on screen, so identities
+        bound beforehand carry no text-space vector. This describes them from
+        their kept thumbnails, so search covers everyone in memory rather than
+        only those seen since the mode was opened. Costs one model pass per
+        identity, once.
         """
         model = self._language_model()
         with self._lock:
@@ -417,8 +409,8 @@ class VisionEngine:
         """Identities matching a description, best first.
 
         Returns an empty list when nothing clears the confidence floor, which
-        is a real answer: a vector index would otherwise always hand back its k
-        nearest rows and make an empty scene look like a confident match.
+        is itself an answer: a vector index otherwise always hands back its k
+        nearest rows, however unlike the query they are.
         """
         model = self._language_model()
         vector = model.encode_text(query)

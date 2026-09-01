@@ -1,12 +1,9 @@
 """Learn the re-id boundary from real returns, using hand-labelled identities.
 
-`calibrate_identity_threshold` builds its positives by splitting one track into
-two adjacent halves, so the query's first observation is a fraction of a second
-after the stored one's last. That is not the situation re-identification meets.
-Measured on this footage the score decays with the gap — median 0.858 at 0-2s
-against 0.770 at 4-6s, with the 5th percentile collapsing 0.764 -> 0.467 — so
-the boundary is fitted on easier examples than it is asked to judge, and the
-resulting threshold sits above most of what a genuine return actually scores.
+Splitting one track into two adjacent halves gives positives whose two views
+are a fraction of a second apart, which is not the situation re-identification
+meets: appearance similarity decays with the gap, so a boundary fitted that way
+sits above what a genuine return scores.
 
 With a labelled sequence there is no need to approximate. Every observation is
 attributed to the person the annotator says it belongs to, so a positive is

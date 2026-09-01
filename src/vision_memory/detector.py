@@ -34,10 +34,8 @@ class Detection:
         ``upper_fraction`` keeps only the top of the box. For people that is
         head and torso, which carries the clothing that tells one person from
         another; legs are largely generic and are the first thing hidden when
-        somebody walks in front. Measured over 500 frames, cropping to the top
-        60% drops the similarity between *different* people from 0.604 to 0.482
-        while barely moving same-person similarity, so the two distributions
-        stop overlapping.
+        somebody walks in front. Dropping them separates different people
+        without weakening the match between two views of the same one.
         """
         h, w = frame.shape[:2]
         x1, y1, x2, y2 = self.box

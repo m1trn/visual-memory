@@ -6,12 +6,9 @@ evidence — and specifically colour *by body band*, because "dark jacket, blue
 jeans" and "dark jacket, dark trousers" are different people even when the
 learned features cannot separate them.
 
-Measured on this footage, matching the same person across a three-second gap
-against provably-different people:
-
-    DINOv2 on the torso crop        AUROC 0.912, 62.1% recall at 5% false accepts
-    colour bands alone              AUROC 0.900, 63.2%
-    both, fused                     AUROC 0.930, 68.8%
+Learned features and colour bands are complementary rather than redundant:
+each separates people the other confuses, so the fused descriptor is stronger
+than either half.
 
 The two halves are scaled by ``sqrt(1 - w)`` and ``sqrt(w)`` before being
 concatenated, which makes the fused vector's cosine exactly the weighted sum of
@@ -68,10 +65,8 @@ class ReidNet:
     """A network trained for person re-identification, run through onnxruntime.
 
     A general-purpose encoder describes what a crop looks like; this describes
-    what makes one person distinguishable from another, which is a different
-    question and the one being asked here. Measured on this footage at a
-    three-second gap: recall at 5% false accepts rises from 62.1% to 83.7%, and
-    it is roughly ten times faster because the network is far smaller.
+    what makes one person distinguishable from another, which is the question
+    being asked here. It is also far smaller, and so much faster to run.
     """
 
     def __init__(self, model_path: str, num_threads: int = 0) -> None:
@@ -241,13 +236,10 @@ class AppearanceDescriber:
 class RoutedDescriber:
     """Describes each object with whichever model is good at its kind of thing.
 
-    A person re-identification network is trained to separate people and is far
-    better at it than a general encoder, but it collapses everything else: on
-    assorted objects it rates unrelated images at 0.454 where the general
-    encoder gives 0.031, and it retrieves 4 of 6 known pairs against 6 of 6.
-    Measured the other way round, on people, the re-id network reaches 0.869
-    AUROC against the general encoder's 0.683. Neither is the right answer for
-    both, so each object goes to the model that can actually see it.
+    A person re-identification network separates people far better than a
+    general encoder, but collapses everything else towards each other; the
+    general encoder is the reverse. Neither is right for both, so each object
+    goes to the model that can actually see it.
 
     The two vectors occupy separate slices of one combined vector, zero
     elsewhere. Within a kind, cosine is exactly the model's own cosine; across
@@ -294,9 +286,7 @@ def describe_detections(
 ) -> dict[int, np.ndarray]:
     """Embed the detections worth embedding, keyed by position in ``detections``.
 
-    The one path from boxes to vectors. Seven scripts previously each built
-    their own call, and three times a change was measured in one and left stale
-    in another, so there is deliberately nothing left to keep in sync.
+    The one path from boxes to vectors, so every caller embeds identically.
 
     ``min_score`` should be the tracker's ``min_exemplar_confidence``. Nothing
     below it can ever be consumed: the tracker reads appearance only in its

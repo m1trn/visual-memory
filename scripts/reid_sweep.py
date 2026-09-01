@@ -1,11 +1,9 @@
 """Choose the re-id operating point by what it does to identity, not by argument.
 
-`max_false_merge_rate` was set to 2% on the reasoning that a wrong merge
-corrupts a record permanently while a missed return only costs a spare
-identity. That reasoning is sound and was never measured. With labelled data it
-can be: each candidate threshold is run end to end and scored against the
-annotator's identities, so the choice is made on IDF1 and identity switches
-rather than on a rate nobody has connected to either.
+A false-merge rate is an indirect target: it says how often two people are
+wrongly joined, not what that costs the viewer. Each candidate threshold here
+is run end to end and scored against the annotator's identities instead, so the
+operating point is chosen on IDF1 and identity switches directly.
 
 Detection and embedding are cached once, because they dominate the runtime and
 do not depend on the threshold. Everything downstream — tracking, memory,

@@ -34,15 +34,10 @@ class KalmanBox:
         self.P = np.eye(8, dtype=np.float64) * 10.0
 
         self._F = np.eye(8, dtype=np.float64)
-        # Position extrapolates with velocity; SIZE DELIBERATELY DOES NOT.
-        # While a track coasts, the detector's last look at a partly hidden
-        # object is a shrunken box, so the filter learns a negative size
-        # velocity and then projects it forward: measured on this footage a
-        # predicted height ran 17.5 -> 8.6 -> -0.4 -> -9.4 px over four frames.
-        # A negative-area box has zero IoU with every detection, and its
-        # collapsed width also inflates the size-normalized centre distance, so
-        # both halves of the gate fail exactly as the object reappears. An
-        # object does not shrink because it is hidden, so size is held instead.
+        # Position extrapolates with velocity; size is held constant. An object
+        # does not shrink because it is hidden, and a projected size velocity
+        # drives a coasting box to zero area, which has no overlap with any
+        # detection and no valid centre-distance scale.
         for i in range(2):
             self._F[i, i + 4] = 1.0
         self._H = np.zeros((4, 8), dtype=np.float64)
@@ -50,17 +45,11 @@ class KalmanBox:
             self._H[i, i] = 1.0
         self._Q = np.eye(8, dtype=np.float64)
         self._Q[4:, 4:] *= 0.01  # velocities drift slowly
-        # How far a corrected box is allowed to sit from the detection that
-        # corrected it. With R equal to Q the Kalman gain lands near 0.65, so
-        # the box only travels two thirds of the way to each new detection and
-        # visibly trails the object, worst just after an occlusion when the
-        # prediction it is being blended with is already stale. The detector is
-        # the only real evidence about where the object is, so it is trusted
-        # four times more: measured, the corrected box's overlap with its own
-        # detection rises 0.929 -> 0.966 and median track life 42 -> 47 frames.
-        # Not trusted further than that, because the filter still has to supply
-        # a velocity for the frames it coasts through, and a gain near 1 fits
-        # that velocity to raw detection jitter.
+        # How far a corrected box may sit from the detection that corrected it.
+        # The detection is the only direct evidence of position, so it carries
+        # four times the weight of the prediction. A gain nearer 1 would fit the
+        # track's velocity to detection jitter, and that velocity is what
+        # carries the box through the frames it coasts.
         self._R = np.eye(4, dtype=np.float64) * measurement_noise
         self._R[2:, 2:] *= 10.0  # width/height measurements are noisier than centers
 
@@ -82,8 +71,8 @@ class KalmanBox:
         """Advance the state by one frame and return the predicted xyxy box."""
         self.x = self._F @ self.x
         self.P = self._F @ self.P @ self._F.T + self._Q
-        # Belt and braces: a box must always have positive area, whatever the
-        # filter believes, or it silently drops out of every geometric test.
+        # A box always has positive area, whatever the filter believes: a
+        # degenerate box drops out of every geometric test.
         self.x[2] = max(float(self.x[2]), _MIN_BOX_SIDE)
         self.x[3] = max(float(self.x[3]), _MIN_BOX_SIDE)
         return _cxcywh_to_xyxy(self.x[:4])
@@ -112,16 +101,14 @@ class Track:
     state: str  # "tentative" | "active" | "lost" | "dead"
     embedding: np.ndarray | None = None
     # The best the detector ever thought of this track. A track that never
-    # cleared a convincing confidence is a candidate false positive, and
-    # that fact is lost if only the latest score is kept.
+    # cleared a convincing confidence is a candidate false positive.
     peak_score: float = 0.0
     # Crops are never written to disk, so these L2-normalized observations are
     # everything a dying track can hand to persistent memory.
     exemplars: list[np.ndarray] = field(default_factory=list)
     # The last few raw observations in ORDER. The exemplar buffer is kept
-    # diverse by evicting whichever survivor most resembles a newcomer, so
-    # its tail is not the latest views once it is full; anything that asks
-    # what the object looks like now must read this instead.
+    # diverse rather than recent, so anything asking what the object looks like
+    # NOW reads this instead.
     recent: list[np.ndarray] = field(default_factory=list)
     # Where the track began, for the continuity prior: an object that
     # reappears where another vanished is judged on where it reappeared,
@@ -304,11 +291,9 @@ class ByteTracker:
 
         When two people cross, one box can cover both of their tracks. Forcing an
         assignment there is a coin flip, and losing it hands one person's id to
-        the other — the worst failure this tracker has, because the wrong name
-        then persists and poisons that identity in memory. Measured on 500
-        frames, appearance-inconsistent links during an overlap ran at 8.6%;
-        withholding these detections drops that to 0% for the cost of 2 deferrals
-        and 0.2% coverage. The tracks simply coast until the crossing resolves.
+        the other, which then persists into memory. Such a detection is
+        withheld instead: the tracks coast on their motion models until the
+        crossing resolves and the boxes separate again.
         """
         if not self._tracks or not detections:
             return set()
@@ -419,14 +404,12 @@ class ByteTracker:
         d_boxes = np.array([detections[i].box for i in det_idx], dtype=np.float64)
         iou = iou_matrix(t_boxes, d_boxes)
         centre = centre_distance_matrix(t_boxes, d_boxes)
-        # Half overlap, half proximity: without the second term every
-        # non-overlapping pair costs exactly 1.0 and Hungarian breaks the tie
-        # arbitrarily instead of preferring the nearest candidate.
+        # Half overlap, half proximity. Overlap alone gives every
+        # non-overlapping pair an identical cost, leaving the assignment to
+        # break ties arbitrarily rather than preferring the nearest candidate.
         reach = max(self.cfg.max_centre_distance, 1e-6)
         # Overlap decides wherever it discriminates; centre distance only breaks
-        # ties among pairs IoU cannot separate. A heavier centre term measurably
-        # changed 6 of 2086 matches and no identities, while saturating exactly
-        # at the gate boundary — so it carried no ranking information anyway.
+        # ties among pairs overlap cannot separate.
         motion = (1.0 - iou) + _TIE_BREAK * np.minimum(centre / reach, 1.0)
 
         # Recent raw observations, falling back to the running mean before any
@@ -439,10 +422,8 @@ class ByteTracker:
         cos = _cosine_matrix(track_embs, det_embs)
         has_cos = ~np.isnan(cos)
 
-        # An object does not change class. Without this the low-confidence pass
-        # feeds a person track the detector's junk (dog, skis, bird all appear
-        # on this footage), which both steals the match and silently relabels
-        # the track.
+        # An object does not change class, so a track only ever matches a
+        # detection of its own kind.
         same_class = np.array(
             [[self._tracks[i].class_id == detections[j].class_id for j in det_idx] for i in track_idx],
             dtype=bool,
@@ -466,12 +447,10 @@ class ByteTracker:
                 continue
             if iou[r, c] < self.cfg.iou_threshold and centre[r, c] > reach:
                 continue
-            # Geometry alone cannot tell two people apart while they cross, but
-            # appearance can: measured on this footage a true match scores 0.853
-            # median (5th percentile 0.722) against 0.603 for a different person.
-            # A veto at 0.65 discards 0.5% of true matches and blocks 69% of the
-            # mistaken pairings geometry would otherwise accept. Only applied
-            # when both sides actually carry an embedding.
+            # Geometry cannot tell two people apart while they cross;
+            # appearance can. A pairing whose appearance similarity falls below
+            # the veto is refused however well the boxes line up. Applied only
+            # when both sides carry an embedding.
             if self.cfg.appearance_veto > 0.0 and has_cos[r, c] and cos[r, c] < self.cfg.appearance_veto:
                 continue
             # When two people overlap, their boxes are nearly interchangeable and

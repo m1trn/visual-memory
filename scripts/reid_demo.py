@@ -2,7 +2,7 @@
 
 When a track dies, ReIdentifier searches memory and either binds it into an
 existing identity or creates a new one; frames are written with a short lag so a
-track's boxes can carry the identity it turned out to be. The reid_bench pair
+track's boxes can carry the identity it was bound to. The reid_bench pair
 cache, when present, supplies the pairs the threshold is learned from.
 
 Usage: python scripts/reid_demo.py [--video PATH] [--max-frames N] [--db PATH] [--index PATH]
@@ -130,8 +130,7 @@ def _draw(frame: np.ndarray, boxes: _Boxes, bound: dict[int, Resolution],
             text = f"#{res.identity_id} {label} (hidden)"
         elif mask is not None:
             # The silhouette separates two people who overlap far better than
-            # two boxes do. Drawing only: masked CROPS were measured to make
-            # re-identification worse, so the embedding path never sees this.
+            # two boxes do. Drawing only: the embedding path never sees this.
             cv2.polylines(frame, outline(mask), True, color, 2)
             tint = np.zeros_like(frame); tint[mask] = color
             cv2.addWeighted(tint, 0.25, frame, 1.0, 0, dst=frame)
