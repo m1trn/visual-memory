@@ -22,6 +22,8 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+_THUMBNAIL_SIDE = 224  # longest side kept per identity; CLIP resizes to 224 anyway
+
 from vision_memory.anomaly import AnomalyDetector, build_detector
 from vision_memory.appearance import build_describer, describe_detections
 from vision_memory.config import (
@@ -122,6 +124,11 @@ class VisionEngine:
         self._language: TextImageEmbedder | None = None
         self._semantic: SemanticIndex | None = None
         self._described: set[int] = set()
+        # One thumbnail per identity, so an object can still be described after
+        # it has walked away. Memory stores vectors, not pictures, and CLIP
+        # needs a picture - without this, switching to language search late
+        # leaves everybody seen beforehand permanently unsearchable.
+        self._thumbnails: dict[int, tuple[int, np.ndarray]] = {}
         self._lock = threading.Lock()
 
     @classmethod
@@ -174,6 +181,7 @@ class VisionEngine:
             self.counts.rebound += events.rebound
             self.counts.taken += events.taken
             views = [self._view(t, t.box) for t in active if t.time_since_update <= self.video_cfg.detect_every_n_frames]
+            self._keep_thumbnails(frame_bgr, views)
             return FrameResult(frame_idx, views, len(self.memory),
                                events.created, events.rebound, events.taken)
 
@@ -354,6 +362,56 @@ class VisionEngine:
                 self._semantic.describe(identity_id, vector)
                 self._described.add(identity_id)
         return len(ids)
+
+    def _keep_thumbnails(self, frame_bgr: np.ndarray, views: "list[TrackView]") -> None:
+        """Remember the largest crop seen of each identity, small and in RAM.
+
+        Kept for every mode, not just language search, because the crop has to
+        exist BEFORE the user asks for it - that is the whole point. The cost
+        is one resize of a small region per bound object per pass, and the
+        biggest view is kept because a bigger crop is the one CLIP can read.
+        """
+        h, w = frame_bgr.shape[:2]
+        for v in views:
+            if v.identity_id is None or v.hidden:
+                continue
+            x1, y1, x2, y2 = (int(c) for c in v.box)
+            x1, y1, x2, y2 = max(x1, 0), max(y1, 0), min(x2, w), min(y2, h)
+            area = (x2 - x1) * (y2 - y1)
+            if x2 - x1 < 16 or y2 - y1 < 32:
+                continue
+            if area <= self._thumbnails.get(v.identity_id, (0, None))[0]:
+                continue
+            crop = frame_bgr[y1:y2, x1:x2]
+            scale = min(1.0, _THUMBNAIL_SIDE / max(crop.shape[:2]))
+            if scale < 1.0:
+                crop = cv2.resize(crop, (max(int(crop.shape[1] * scale), 1),
+                                         max(int(crop.shape[0] * scale), 1)))
+            self._thumbnails[v.identity_id] = (area, crop.copy())
+
+    def backfill_descriptions(self) -> int:
+        """Describe every remembered identity that has never been described.
+
+        Language search only runs its describer while its mode is on screen, so
+        an identity bound five minutes before the user pressed the key has no
+        CLIP vector and cannot be found - even though re-identification knows
+        exactly who they are. This catches those up from the kept thumbnails,
+        at roughly 45 ms each, so search covers everyone in memory rather than
+        only those seen since the switch.
+        """
+        model = self._language_model()
+        with self._lock:
+            pending = [(i, c) for i, (_, c) in self._thumbnails.items()
+                       if i not in self._described and self.memory.get(i) is not None]
+        if not pending:
+            return 0
+        crops = [cv2.cvtColor(c, cv2.COLOR_BGR2RGB) for _, c in pending]
+        vectors = model.encode_images(crops)
+        with self._lock:
+            for (identity_id, _), vector in zip(pending, vectors):
+                self._semantic.describe(identity_id, vector)
+                self._described.add(identity_id)
+        return len(pending)
 
     def find(self, query: str, k: int = 5) -> list[tuple[Identity, float]]:
         """Identities matching a description, best first.

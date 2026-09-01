@@ -320,6 +320,7 @@ class Describer:
         self.engine = engine
         self.described = 0
         self.wanted = False
+        self.caught_up = False
         self.error: str | None = None
 
     def run(self, stats: dict, mailbox: "LatestFrame") -> None:
@@ -331,6 +332,9 @@ class Describer:
                 continue
             idx, frame = anchor
             try:
+                if not self.caught_up:
+                    self.described += self.engine.backfill_descriptions()
+                    self.caught_up = True
                 self.described += self.engine.describe_identities(frame, self.engine.view(idx))
             except Exception as exc:                      # a missing optional dependency
                 self.error = str(exc)[:90]
