@@ -288,6 +288,25 @@ def _shape(frame, box, colour, mask=None, thickness: int = 2, fill: float = 0.0)
     cv2.rectangle(frame, (x1, y1), (x2, y2), colour, thickness)
 
 
+def type_key(key: int, query: str) -> tuple[str, bool, bool]:
+    """One keystroke while a description is being typed.
+
+    Returns ``(query, still_typing, run_the_search)``. Split out of the main
+    loop so it can be tested without a window: while typing, the digits and `q`
+    are letters rather than mode and quit commands, and getting that wrong
+    means the user cannot type "a person" without switching modes twice.
+    """
+    if key in (13, 10):                      # enter: search what was typed
+        return query, False, True
+    if key == 27:                            # escape: abandon it
+        return "", False, False
+    if key == 8:                             # backspace
+        return query[:-1], True, False
+    if 32 <= key < 127:                      # any printable character
+        return query + chr(key), True, False
+    return query, True, False                # arrows and the like: ignored
+
+
 class Describer:
     """Gives each new identity one semantic description, on its own thread.
 
@@ -556,15 +575,9 @@ def main() -> None:
             if typing:
                 # While a query is being typed the digits and q are letters, not
                 # commands, so the mode keys are deliberately not consulted here.
-                if key in (13, 10):                      # enter
-                    typing = False
+                query, typing, go = type_key(key, query)
+                if go:
                     lang_hits = engine.find(query, k=5) if query else []
-                elif key == 27:                          # escape
-                    typing, query = False, ""
-                elif key == 8:                           # backspace
-                    query = query[:-1]
-                elif 32 <= key < 127:
-                    query += chr(key)
                 continue
             if key == ord("q"):
                 break

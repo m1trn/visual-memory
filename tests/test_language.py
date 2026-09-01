@@ -71,3 +71,32 @@ def test_config_floor_is_on_the_text_image_scale() -> None:
     """Guards a real trap: image-image cosine runs near 0.8, text-image near
     0.28, so a threshold copied from the identity path would reject everything."""
     assert 0.1 < LanguageConfig().min_score < 0.5
+
+
+def test_typing_a_query_keystroke_by_keystroke() -> None:
+    """The path a user actually takes: press /, type, press enter.
+
+    Worth pinning because while typing, `1` and `q` must be letters rather than
+    the mode and quit commands - otherwise "a person in a red jacket" is
+    untypable.
+    """
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    from live_demo import type_key
+
+    query, typing, go = "", True, False
+    for ch in "a person in a red jacket 1q":
+        query, typing, go = type_key(ord(ch), query)
+        assert typing and not go
+    assert query == "a person in a red jacket 1q"
+
+    query, typing, go = type_key(8, query)          # backspace
+    assert query == "a person in a red jacket 1" and typing and not go
+
+    query, typing, go = type_key(13, query)         # enter runs it
+    assert not typing and go and query == "a person in a red jacket 1"
+
+    query, typing, go = type_key(27, "half typed")  # escape abandons it
+    assert query == "" and not typing and not go
