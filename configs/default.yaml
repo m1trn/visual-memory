@@ -264,3 +264,17 @@ anomaly:
   nu: 0.1             # ocsvm: max fraction of normals outside boundary
   seed: 0
 
+
+language:                 # finding remembered objects by description
+  model_name: ViT-B-32
+  pretrained: laion2b_s34b_b79k
+                          # Measured on this CPU rather than assumed: MobileCLIP2-S0 is the smaller
+                          # model (75M parameters against 151M) and ran at 112 ms/crop against this
+                          # one's 44 ms, because MobileCLIP is tuned for phone neural engines rather
+                          # than desktop PyTorch. Retrieval was correct for both on 35x80 crops.
+  batch_size: 16
+  min_score: 0.22         # cosine below which a hit is not a match but the least-bad row in the
+                          # index. Text-image cosine lives on a far tighter scale than image-image:
+                          # a good hit on our own crops sits near 0.28, not near 0.8. Without a floor
+                          # an empty scene still returns k confident-looking answers, so this is what
+                          # makes "nothing here matches that" expressible.

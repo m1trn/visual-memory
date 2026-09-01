@@ -8,6 +8,7 @@ pillow
 pyyaml
 onnxruntime
 scikit-learn
+open_clip_torch   # CLIP image+text space for language search; brings regex and ftfy
 
 # dev
 pytest

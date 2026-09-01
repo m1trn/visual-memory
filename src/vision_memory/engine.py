@@ -30,6 +30,7 @@ from vision_memory.config import (
 )
 from vision_memory.detector import Detector, YoloOnnxDetector
 from vision_memory.heatmap import PatchAnomaly, PatchAnomalyDetector
+from vision_memory.language import SemanticIndex, TextImageEmbedder
 from vision_memory.memory import Identity, VisualMemory
 from vision_memory.reid import Verifier
 from vision_memory.reidentifier import IdentityBinder, ReIdentifier
@@ -116,6 +117,11 @@ class VisionEngine:
         self._patch_models: dict[str, tuple[PatchAnomalyDetector, int]] = {}
         self._patch_bank: dict[str, list[np.ndarray]] = {}
         self._last_frame_idx = -1
+        # Language search is optional and costs a second model, so it is built
+        # only when something asks for it. `describe_identities` fills it.
+        self._language: TextImageEmbedder | None = None
+        self._semantic: SemanticIndex | None = None
+        self._described: set[int] = set()
         self._lock = threading.Lock()
 
     @classmethod
@@ -305,6 +311,67 @@ class VisionEngine:
                 self._patch_models[view.label] = (model, len(bank))
                 cached = self._patch_models[view.label]
         return cached[0].score(patches)
+
+    # ---------------------------------------------------------------- language
+
+    def language_ready(self) -> bool:
+        return self._semantic is not None
+
+    def _language_model(self) -> TextImageEmbedder:
+        if self._language is None:
+            from vision_memory.config import load_language_config
+
+            self._language = TextImageEmbedder(load_language_config())
+            self._semantic = SemanticIndex(self._language.dim)
+        return self._language
+
+    def describe_identities(self, frame_bgr: np.ndarray, views: "list[TrackView]") -> int:
+        """Give newly-bound identities a semantic description. Returns how many.
+
+        Called with the frame the pipeline last processed. Each identity is
+        described ONCE, from the first crop good enough to be worth embedding:
+        a CLIP pass costs about 45 ms, and re-describing somebody every frame
+        would buy nothing - what the sentence "a person in a red jacket" has to
+        match does not change as they walk.
+        """
+        model = self._language_model()
+        h, w = frame_bgr.shape[:2]
+        crops, ids = [], []
+        for v in views:
+            if v.identity_id is None or v.identity_id in self._described or v.hidden:
+                continue
+            x1, y1, x2, y2 = (int(c) for c in v.box)
+            x1, y1, x2, y2 = max(x1, 0), max(y1, 0), min(x2, w), min(y2, h)
+            if x2 - x1 < 16 or y2 - y1 < 32:
+                continue  # too small for the model to read anything from
+            crops.append(cv2.cvtColor(frame_bgr[y1:y2, x1:x2], cv2.COLOR_BGR2RGB))
+            ids.append(v.identity_id)
+        if not crops:
+            return 0
+        vectors = model.encode_images(crops)
+        with self._lock:
+            for identity_id, vector in zip(ids, vectors):
+                self._semantic.describe(identity_id, vector)
+                self._described.add(identity_id)
+        return len(ids)
+
+    def find(self, query: str, k: int = 5) -> list[tuple[Identity, float]]:
+        """Identities matching a description, best first.
+
+        Returns an empty list when nothing clears the confidence floor, which
+        is a real answer: a vector index would otherwise always hand back its k
+        nearest rows and make an empty scene look like a confident match.
+        """
+        model = self._language_model()
+        vector = model.encode_text(query)
+        with self._lock:
+            hits = self._semantic.find(vector, k, model.cfg.min_score)
+            out = []
+            for identity_id, score in hits:
+                identity = self.memory.get(identity_id)
+                if identity is not None:
+                    out.append((identity, score))
+            return out
 
     # ---------------------------------------------------------------- close
     def close(self) -> None:

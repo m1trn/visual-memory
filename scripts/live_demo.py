@@ -40,7 +40,7 @@ from vision_memory.engine import TrackView, VisionEngine  # noqa: E402
 from vision_memory.heatmap import overlay  # noqa: E402
 from vision_memory.segmenter import YoloSegmenter, outline  # noqa: E402
 
-MODES = {ord("1"): "memory", ord("2"): "search", ord("3"): "anomaly"}
+MODES = {ord("1"): "memory", ord("2"): "search", ord("3"): "anomaly", ord("4"): "language"}
 
 
 class LatestFrame:
@@ -288,6 +288,65 @@ def _shape(frame, box, colour, mask=None, thickness: int = 2, fill: float = 0.0)
     cv2.rectangle(frame, (x1, y1), (x2, y2), colour, thickness)
 
 
+class Describer:
+    """Gives each new identity one semantic description, on its own thread.
+
+    A CLIP pass costs about 45 ms per crop. Doing it where the frame is drawn
+    would cost the display exactly what the heatmaps used to; doing it once per
+    identity rather than once per frame is what makes it cheap at all, since
+    the sentence "a person in a red jacket" does not stop matching as they walk.
+    """
+
+    def __init__(self, engine: VisionEngine) -> None:
+        self.engine = engine
+        self.described = 0
+        self.wanted = False
+        self.error: str | None = None
+
+    def run(self, stats: dict, mailbox: "LatestFrame") -> None:
+        done = -1
+        while not mailbox.closed:
+            anchor = stats.get("anchor")
+            if not self.wanted or anchor is None or anchor[0] == done:
+                time.sleep(0.02)
+                continue
+            idx, frame = anchor
+            try:
+                self.described += self.engine.describe_identities(frame, self.engine.view(idx))
+            except Exception as exc:                      # a missing optional dependency
+                self.error = str(exc)[:90]
+                return
+            done = idx
+
+
+def _draw_language(frame, views, query: str, typing: bool, hits, described: int,
+                   error: str | None, shapes: dict | None = None) -> None:
+    """Highlight the identities a typed description matched."""
+    wanted = {identity.id for identity, _ in hits}
+    scores = {identity.id: score for identity, score in hits}
+    for v in views:
+        hit = v.identity_id in wanted
+        colour = (0, 215, 255) if hit else (150, 150, 150)
+        _shape(frame, v.box, colour, (shapes or {}).get(v.track_id), 3 if hit else 1,
+               fill=0.3 if hit else 0.0)
+        if hit:
+            x1, y1 = int(v.box[0]), int(v.box[1])
+            cv2.putText(frame, f"#{v.identity_id} {scores[v.identity_id]:.2f}",
+                        (x1, max(y1 - 4, 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, colour, 2)
+    h = frame.shape[0]
+    cv2.rectangle(frame, (0, h - 40), (frame.shape[1], h), (0, 0, 0), -1)
+    if error:
+        line = f"language search unavailable: {error}"
+    elif typing:
+        line = f"find: {query}_   (enter to search, esc to cancel)"
+    elif not query:
+        line = f"press / to type a description   [{described} identities described]"
+    else:
+        line = (f"find: {query}   ->   {len(hits)} match" + ("" if len(hits) == 1 else "es")
+                + ("" if hits else "   (nothing matched)"))
+    cv2.putText(frame, line, (10, h - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 215, 255), 2)
+
+
 def _draw_memory(frame, views: list[TrackView], shapes: dict[int, np.ndarray] | None = None) -> None:
     shapes = shapes or {}
     for v in views:
@@ -374,7 +433,7 @@ def main() -> None:
     ap.add_argument("--db", type=Path, default=Path("data/live.db"))
     ap.add_argument("--index", type=Path, default=Path("data/live.faiss"))
     ap.add_argument("--max-frames", type=int, default=None)
-    ap.add_argument("--mode", choices=("memory", "search", "anomaly"), default="memory",
+    ap.add_argument("--mode", choices=("memory", "search", "anomaly", "language"), default="memory",
                     help="mode to start in; the 1/2/3 keys still switch")
     ap.add_argument("--outlines", default="data/models/yolo11n_seg_768.onnx",
                     help="segmentation model for display silhouettes; empty string draws boxes")
@@ -408,6 +467,7 @@ def main() -> None:
         print(f"no segmentation model at {args.outlines}; drawing boxes")
 
     heatmaps = Heatmaps(engine)
+    describer = Describer(engine)
 
     mailbox = LatestFrame()
     stats: dict = {"pipeline_ms": 0.0, "skipped": 0}
@@ -416,9 +476,12 @@ def main() -> None:
     if shapes_of is not None:
         threading.Thread(target=shapes_of.run, args=(mailbox,), daemon=True).start()
     threading.Thread(target=heatmaps.run, args=(stats, mailbox), daemon=True).start()
+    threading.Thread(target=describer.run, args=(stats, mailbox), daemon=True).start()
 
     mode = args.mode
     heatmaps.wanted = mode == "anomaly"
+    describer.wanted = mode == "language"
+    query, typing, lang_hits = "", False, []
     selected: int | None = None
     hits: list = []
     baselines: dict = {}
@@ -468,6 +531,9 @@ def main() -> None:
                 _draw_memory(frame, views, shapes)
             elif mode == "search":
                 _draw_search(frame, views, selected, hits, shapes)
+            elif mode == "language":
+                _draw_language(frame, views, query, typing, lang_hits,
+                               describer.described, describer.error, shapes)
             else:
                 if idx % 30 == 0:
                     baselines.clear()
@@ -480,17 +546,35 @@ def main() -> None:
             seg_ms = f"  outlines {shapes_of.ms:.0f} ms" if shapes_of else ""
             if mode == "anomaly":
                 seg_ms += f"  heatmaps {heatmaps.ms:.0f} ms"
+            if mode == "language":
+                seg_ms += f"  described {describer.described}"
             hud = (f"{mode.upper()}  display {shown / max(elapsed, 1e-6):.1f} fps  pipeline {stats['pipeline_ms']:.0f} ms{seg_ms}"
                    f" (skips {stats['skipped']})  objects {len(views)}  known {c.rebound}  new {c.created}")
             cv2.putText(frame, hud, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
             cv2.imshow(win, frame)
             key = cv2.waitKey(1) & 0xFF
+            if typing:
+                # While a query is being typed the digits and q are letters, not
+                # commands, so the mode keys are deliberately not consulted here.
+                if key in (13, 10):                      # enter
+                    typing = False
+                    lang_hits = engine.find(query, k=5) if query else []
+                elif key == 27:                          # escape
+                    typing, query = False, ""
+                elif key == 8:                           # backspace
+                    query = query[:-1]
+                elif 32 <= key < 127:
+                    query += chr(key)
+                continue
             if key == ord("q"):
                 break
+            if key == ord("/") and mode == "language":
+                typing, query, lang_hits = True, "", []
             if key in MODES:
                 mode = MODES[key]
-                # The heatmap worker is idle unless its mode is on screen.
+                # Each worker is idle unless its mode is on screen.
                 heatmaps.wanted = mode == "anomaly"
+                describer.wanted = mode == "language"
             if args.max_frames is not None and idx >= args.max_frames:
                 break
     finally:

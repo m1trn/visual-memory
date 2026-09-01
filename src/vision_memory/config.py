@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
+
+if TYPE_CHECKING:  # imported for the annotation only; language search is optional
+    from vision_memory.language import LanguageConfig
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "default.yaml"
 
@@ -133,6 +136,13 @@ def load_search_config(path: Path = DEFAULT_CONFIG_PATH) -> SearchConfig:
 def load_anomaly_config(path: Path = DEFAULT_CONFIG_PATH) -> AnomalyConfig:
     """Load only the `anomaly` section as a typed dataclass."""
     return AnomalyConfig(**load_raw(path)["anomaly"])
+
+
+def load_language_config(path: Path = DEFAULT_CONFIG_PATH) -> LanguageConfig:
+    """Load only the `language` section as a typed dataclass."""
+    from vision_memory.language import LanguageConfig
+
+    return LanguageConfig(**load_raw(path)["language"])
 
 
 def load_detector_config(path: Path = DEFAULT_CONFIG_PATH) -> DetectorConfig:

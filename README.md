@@ -12,6 +12,7 @@ that one space:
 | *Have I seen this before?* | nearest stored identity, above a calibrated boundary |
 | *What looks like this?* | k-nearest neighbours over memory |
 | *Is this normal?* | distance to the distribution of normal objects |
+| *Where is the red backpack?* | the same, in a second space shared with text |
 
 The encoder is never fine-tuned. A mutable encoder would invalidate every
 vector already stored, so the backbone stays frozen and everything is built
@@ -63,6 +64,9 @@ Three modes, switched with `1` `2` `3`, all of them at camera rate:
 2. **Search** — click an object; the closest matches in memory are ranked.
 3. **Anomaly** — objects shaded by how unusual they are, with a heatmap showing
    *where* on the object is unusual rather than only how much.
+4. **Language** — press `/` and type a description; the objects in memory that
+   match it are highlighted. "a person in a red jacket" finds the person in the
+   red jacket, and "a bicycle" correctly finds nothing when there is no bicycle.
 
 Detection, embedding, segmentation and heatmaps each run on their own thread,
 and the display projects boxes forward with optical flow between pipeline
@@ -105,6 +109,7 @@ src/vision_memory/     one module per pipeline stage
   search.py            the FAISS index
   anomaly.py           kNN / Mahalanobis / IsolationForest / OC-SVM
   heatmap.py           per-patch anomaly, so it can say where
+  language.py          a CLIP space shared with text, for search by description
   engine.py            one pipeline, three reads
 scripts/               entrypoints: demos, benchmarks, evaluation, calibration
 tests/                 pytest
@@ -126,6 +131,11 @@ configs/default.yaml   every tunable, with the measurement behind it
   before embedding sounds obviously right and made re-identification worse
   (held-out AUROC 0.979 to 0.962): the embedder was trained on rectangles with
   background in them.
+- **Language search gets its own space, deliberately.** The identity vectors
+  are trained so two people in similar coats land apart; text search needs the
+  opposite, since "a red backpack" must match every red backpack. One space
+  cannot do both, so CLIP vectors live in a second index keyed by identity and
+  nothing about the identity path changes.
 - **Several trained heads were built and rejected.** A logistic pair head, an
   MLP verifier, and a 768→128 projection all matched plain cosine or lost to
   it end to end. The projection is kept as a config option for its six-fold
