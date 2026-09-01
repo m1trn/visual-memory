@@ -20,7 +20,6 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from vision_memory.config import DetectorConfig
 from vision_memory.detector import Detection, YoloOnnxDetector, _nms
 
 _PROTOTYPES = 32

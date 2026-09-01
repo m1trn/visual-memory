@@ -319,7 +319,7 @@ def test_embeddings_of_weak_detections_are_never_consumed() -> None:
     exemplar gate refuses weaker crops, so a run given embeddings for every
     detection and a run given them only for strong ones must be identical.
     """
-    rng = np.random.default_rng(3)
+    np.random.default_rng(3)
     e = np.eye(6, dtype=np.float32)
 
     def run(embed_all: bool):

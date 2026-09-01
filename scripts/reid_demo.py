@@ -28,12 +28,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from reid_bench import _DEFAULT_CACHE  # noqa: E402
 from track_demo import _color  # noqa: E402
 from vision_memory.config import (  # noqa: E402
-    load_detector_config, load_encoder_config, load_appearance_config, load_memory_config, load_reid_config,
+    load_detector_config, load_appearance_config, load_memory_config, load_reid_config,
     load_tracker_config, load_video_config,
 )
 from vision_memory.detector import YoloOnnxDetector  # noqa: E402
 from vision_memory.appearance import build_describer, describe_detections  # noqa: E402
-from vision_memory.encoder import Encoder  # noqa: E402
 from vision_memory.memory import VisualMemory  # noqa: E402
 from vision_memory.reid import (Verifier, balance, build_verifier, calibrate_identity_threshold,
                                 identity_score_with, mine_pairs, split_by_group)  # noqa: E402
@@ -158,7 +157,7 @@ def main() -> None:
 
     video_cfg, tracker_cfg = load_video_config(), load_tracker_config()
     mem_cfg = replace(load_memory_config(), db_path=str(args.db), index_path=str(args.index))
-    detector, encoder = YoloOnnxDetector(load_detector_config()), Encoder(load_encoder_config())
+    detector = YoloOnnxDetector(load_detector_config())
     describer = build_describer(load_appearance_config())
     tracker = ByteTracker(tracker_cfg)
     segmenter = None

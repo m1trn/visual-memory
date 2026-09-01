@@ -207,7 +207,7 @@ def main() -> None:
         mark = "  <- fitted here" if abs(t - round(fitted, 3)) < 1e-9 else ""
         print(f"{t:>10.3f}{(pos >= t).mean():>19.0%}{(neg >= t).mean():>14.1%}{mark}")
     print(f"\nfitted threshold at {reid_cfg.max_false_merge_rate:.0%} wrong merges: {fitted:.3f}")
-    print(f"currently in use, fitted on same-track splits: 0.704")
+    print("currently in use, fitted on same-track splits: 0.704")
 
 
 if __name__ == "__main__":

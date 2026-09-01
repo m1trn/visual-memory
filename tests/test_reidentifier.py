@@ -277,7 +277,7 @@ def test_reconsider_will_not_fuse_two_records_that_coexisted(tmp_path) -> None:
     obs = cluster(e[1], 4, seed=31)
     with VisualMemory(cfg(tmp_path), DIM) as mem:
         rid = ReIdentifier(mem, FakeVerifier(0.0))  # appearance accepts anything
-        early = rid.resolve("bag", obs, 0.0, 5.0, 4)
+        rid.resolve("bag", obs, 0.0, 5.0, 4)
         overlapping = rid.resolve("bag", obs, 4.0, 27.0, 4)   # coexisted with `early`
         assert overlapping.is_new and len(mem) == 2
 

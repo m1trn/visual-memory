@@ -23,12 +23,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from vision_memory.config import (  # noqa: E402
     load_appearance_config,
-    load_detector_config, load_encoder_config, load_memory_config,
+    load_detector_config, load_memory_config,
     load_reid_config, load_tracker_config, load_video_config,
 )
 from vision_memory.detector import YoloOnnxDetector  # noqa: E402
 from vision_memory.appearance import build_describer, describe_detections  # noqa: E402
-from vision_memory.encoder import Encoder  # noqa: E402
 from vision_memory.metrics import auroc  # noqa: E402
 from vision_memory.reid import balance, build_verifier, mine_pairs, split_by_group  # noqa: E402
 from vision_memory.tracker import ByteTracker  # noqa: E402

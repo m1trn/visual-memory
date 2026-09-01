@@ -16,7 +16,6 @@ Usage: python scripts/fetch_mot.py [--sequence MOT17-02-FRCNN] [--frames N]
 from __future__ import annotations
 
 import argparse
-import sys
 import urllib.error
 import urllib.request
 from pathlib import Path

@@ -20,11 +20,9 @@ import cv2
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from vision_memory.config import (load_appearance_config, load_detector_config,  # noqa: E402
-                                  load_encoder_config,
                                   load_tracker_config, load_video_config)
 from vision_memory.detector import YoloOnnxDetector  # noqa: E402
 from vision_memory.appearance import build_describer, describe_detections  # noqa: E402
-from vision_memory.encoder import Encoder  # noqa: E402
 from vision_memory.tracker import ByteTracker  # noqa: E402
 
 _DEFAULT_VIDEO = Path("data/samples/vtest.avi")

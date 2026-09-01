@@ -22,12 +22,11 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from vision_memory.config import (  # noqa: E402
-    load_detector_config, load_encoder_config, load_memory_config,
+    load_appearance_config, load_detector_config, load_memory_config,
     load_tracker_config, load_video_config,
 )
 from vision_memory.detector import YoloOnnxDetector  # noqa: E402
 from vision_memory.appearance import build_describer, describe_detections  # noqa: E402
-from vision_memory.encoder import Encoder  # noqa: E402
 from vision_memory.memory import VisualMemory  # noqa: E402
 from vision_memory.tracker import ByteTracker  # noqa: E402
 
@@ -69,7 +68,6 @@ def main() -> None:
     cap = cv2.VideoCapture(str(args.video))
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
 
-    exemplars: dict[int, list[np.ndarray]] = {}
     first_frame: dict[int, int] = {}
     embed_calls = 0
     embed_time = 0.0

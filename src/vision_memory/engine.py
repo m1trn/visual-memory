@@ -17,7 +17,7 @@ whenever it is free and draws `view()` at camera rate in between.
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import cv2
 import numpy as np

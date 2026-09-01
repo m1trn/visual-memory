@@ -58,7 +58,7 @@ def main() -> None:
 
     paths = fetch_samples(Path("data/samples"))[:10]
     images = [Image.open(p).convert("RGB") for p in paths]
-    names = [p.stem for p in paths]
+    _ = [p.stem for p in paths]
     base = load_encoder_config()
 
     print(f"{'backend':<10}{'model':<16}{'dim':>6}{'res':>5}{'ms/crop':>9}{'ms/crop(b8)':>13}"

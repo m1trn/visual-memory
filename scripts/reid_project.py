@@ -31,7 +31,7 @@ from reid_calibrate import _by_person, threshold_at  # noqa: E402
 from reid_train import observations, real_returns  # noqa: E402
 from vision_memory.appearance import build_describer  # noqa: E402
 from vision_memory.config import load_appearance_config, load_memory_config, load_reid_config  # noqa: E402
-from vision_memory.reid import auroc, identity_score, select_diverse  # noqa: E402
+from vision_memory.reid import auroc, identity_score  # noqa: E402
 
 
 def _slice(rows, dim):

@@ -19,7 +19,6 @@ Usage: python scripts/live_demo.py [--source 0 | path/to/video] [--db PATH] [--i
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 import threading
 import time

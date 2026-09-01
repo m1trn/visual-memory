@@ -27,7 +27,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from mot_eval import _MIN_EVIDENCE, _MIN_VISIBILITY, _score  # noqa: E402
+from mot_eval import _MIN_EVIDENCE, _score  # noqa: E402
 from vision_memory.appearance import build_describer, describe_detections  # noqa: E402
 from vision_memory.config import (  # noqa: E402
     load_appearance_config, load_detector_config, load_memory_config,
