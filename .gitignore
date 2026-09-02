@@ -11,3 +11,4 @@ data/
 *.md
 !README.md
 scratch_*.py
+.venv-train/
