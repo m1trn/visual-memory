@@ -109,9 +109,8 @@ def test_routing_sends_each_kind_to_its_own_slice() -> None:
     """A specialist model is only good at its own subject; the rest keep the general one."""
     from vision_memory.appearance import build_describer
 
+    _needs_reid_weights()
     cfg = load_appearance_config()
-    if cfg.model != "reid":
-        pytest.skip("routing only applies when a specialist model is configured")
     d = build_describer(cfg)
     frame = np.random.randint(0, 255, (300, 400, 3), dtype=np.uint8)
     boxes = [np.array([10.0, 10.0, 60.0, 150.0]), np.array([100.0, 40.0, 160.0, 190.0])]
@@ -132,9 +131,8 @@ def test_routing_preserves_within_kind_similarity() -> None:
     """Slotting must not distort the model's own scores, only place them."""
     from vision_memory.appearance import build_describer
 
+    _needs_reid_weights()
     cfg = load_appearance_config()
-    if cfg.model != "reid":
-        pytest.skip("routing only applies when a specialist model is configured")
     d = build_describer(cfg)
     frame = np.random.randint(0, 255, (300, 400, 3), dtype=np.uint8)
     box = np.array([10.0, 10.0, 60.0, 150.0])
