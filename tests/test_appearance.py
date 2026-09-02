@@ -3,8 +3,25 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from pathlib import Path
+
 from vision_memory.appearance import colour_bands, fuse
 from vision_memory.config import AppearanceConfig, load_appearance_config
+
+
+def _needs_reid_weights() -> None:
+    """Skip when the re-id weights are absent.
+
+    Model files are not distributed with the source, so a fresh checkout has
+    none. A test that cannot run without one skips rather than fails: a red
+    suite would otherwise be the first thing a new checkout shows, and say
+    nothing about the code.
+    """
+    cfg = load_appearance_config()
+    if cfg.model != "reid":
+        pytest.skip("configured appearance model is not the re-id network")
+    if not Path(cfg.reid_model_path).exists():
+        pytest.skip(f"re-id weights not present at {cfg.reid_model_path}")
 
 
 def solid(colour: tuple[int, int, int], h: int = 40, w: int = 20) -> np.ndarray:
@@ -61,9 +78,8 @@ def test_reid_model_sees_the_whole_box_and_encoder_only_the_top() -> None:
 
     from vision_memory.appearance import build_embedder
 
+    _needs_reid_weights()
     cfg = load_appearance_config()
-    if cfg.model != "reid":
-        pytest.skip("configured appearance model is not the re-id network")
     _, upper = build_embedder(cfg)
     assert upper == 1.0
 
@@ -78,9 +94,8 @@ def test_reid_net_pads_short_batches_and_returns_unit_vectors() -> None:
     """The export has a fixed batch; a short call must not silently mis-align."""
     from vision_memory.appearance import ReidNet
 
+    _needs_reid_weights()
     cfg = load_appearance_config()
-    if cfg.model != "reid":
-        pytest.skip("configured appearance model is not the re-id network")
     net = ReidNet(cfg.reid_model_path)
     for count in (1, 3, net._batch + 2 if net._batch else 5):
         crops = [np.random.randint(0, 255, (64, 32, 3), dtype=np.uint8) for _ in range(count)]
