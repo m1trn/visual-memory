@@ -51,6 +51,70 @@ Honest limits, both measured rather than assumed:
   tracked and stored correctly; identifying *a particular car* is beyond these
   features.
 
+## Model evaluations
+
+Every model in this system was chosen by running the candidates and reading the
+result, and several plausible ideas were built and then rejected on their own
+numbers. The comparisons are worth as much as the choices.
+
+**General backbone: Meta DINOv2 ViT-S/14 over NVIDIA C-RADIOv3-B.** Scored on
+this project's own measures rather than published benchmarks: separation margin
+0.848 against 0.849, retrieval 6 of 6 pairs for both, anomaly AUROC 0.991
+against 0.991 across ten classes. Identical accuracy for 4.1x the latency
+(491 against 119 ms/crop), 4.8x the memory (896 against 187 MB) and 6x the
+vector width (2304 against 384 dims, which multiplies index memory and search
+cost). No measured benefit to pay for. RADIO stays selectable with
+`encoder.backend: radio`.
+
+Two corrections to that evaluation, both found afterwards and both recorded:
+
+- The bake-off ran RADIO at 256 px when its preferred resolution is 512, so it
+  was measured at roughly a quarter of its intended cost and *still* only tied.
+  The correction strengthens the conclusion rather than reversing it.
+- The claim that RADIO's CLIP lineage made it the natural route to language
+  search was wrong. All 17 variants in its `RESOURCE_MAP` carry `adaptor_names = None`:
+  the adaptor types exist in the registry, but no shipped checkpoint has a text
+  encoder. Language search needed a dedicated image-text model, which is why it
+  runs on CLIP.
+
+**Person appearance: Tencent YouTu over OSNet x0.25.** Offline the two look
+close (held-out AUROC 0.992 against 0.981); end to end the gap is decisive.
+Held out on a sequence used for no tuning decision:
+
+| | IDF1 | switches |
+| --- | --- | --- |
+| tracker only | 65.1% | 22 |
+| OSNet x0.25 | 66.6% | 19 |
+| **YouTu** | **81.3%** | **9** |
+
+The two score on different scales (calibrated boundary 0.593 against 0.755), so
+the threshold is re-fitted from mined pairs after any swap rather than carried
+over.
+
+**Routing, because the specialist does not generalise.** A person re-id network
+beats a general encoder on people (0.869 AUROC against 0.683) and collapses on
+everything else, rating *unrelated* objects at 0.454 where DINOv2 gives 0.031.
+Each object goes to the model that can see it, in disjoint slices of one vector.
+
+**Language: CLIP ViT-B-32 over MobileCLIP2-S0.** The smaller model (75M
+parameters against 151M) was the obvious pick for a CPU and ran at 112 ms/crop
+against 44 ms, being designed for phone neural engines rather than desktop
+PyTorch. Both retrieved correctly on 35x80 pixel crops.
+
+### Built, measured, rejected
+
+Kept in the log because the negative results carry the same information as the
+positive ones:
+
+| idea | why it should work | what it did |
+| --- | --- | --- |
+| Silhouette-masked crops | remove the background from the embedding | held-out AUROC 0.979 to 0.962; the embedder is trained on rectangles |
+| Trained MLP pair verifier | learn the decision cosine approximates | 0.978 against cosine's 0.980, a wash |
+| 768 to 128 projection head | a sixth of the memory, same separation | separation held, end-to-end IDF1 two points lower; kept as an option, off |
+| Temporal voting on rebinds | confirm before committing, as OCR pipelines do | switches 9 to 35; a deferred track wears no number while a rival takes it |
+| Minimum confidence to create | stop static objects becoming people | rejected three ways; distant real people are also detected weakly |
+
+
 ## Live
 
 ```bash
@@ -118,28 +182,22 @@ configs/default.yaml   every tunable, with the measurement behind it
 
 ## Notes on some choices
 
-- **The embedder is split by what is being described.** A person-specific
-  re-identification model beats a general one badly on people (held-out IDF1
-  66.6% to 81.3%), but it only knows people. Objects go to DINOv2 with colour
-  statistics; the two occupy disjoint slices, so a person is never compared
-  against a suitcase.
 - **Two boundaries, not one.** The threshold for "are these two crops the same
   person" does not transfer to "is this track the person behind that stored
   record", because the second maximises over several stored views and sits much
   higher. Using one boundary for both caused false merges.
-- **Masks are for looking at, not for measuring.** Cropping to the silhouette
-  before embedding sounds obviously right and made re-identification worse
-  (held-out AUROC 0.979 to 0.962): the embedder was trained on rectangles with
-  background in them.
 - **Language search gets its own space, deliberately.** The identity vectors
   are trained so two people in similar coats land apart; text search needs the
   opposite, since "a red backpack" must match every red backpack. One space
   cannot do both, so CLIP vectors live in a second index keyed by identity and
   nothing about the identity path changes.
-- **Several trained heads were built and rejected.** A logistic pair head, an
-  MLP verifier, and a 768→128 projection all matched plain cosine or lost to
-  it end to end. The projection is kept as a config option for its six-fold
-  size reduction, and is off by default.
+- **The detector is the bottleneck, and the evaluation says so.** Re-identifying
+  someone who was never detected is impossible, so effort spent on matching has
+  a ceiling set by recall. That is why the limits above are stated in detector
+  terms rather than as a re-identification score.
+- **Held out means held out.** One sequence is used for tuning and another is
+  never consulted while choosing anything. Every headline number in this file
+  is from the second.
 
 ## Licence
 
