@@ -12,3 +12,6 @@ data/
 !README.md
 scratch_*.py
 .venv-train/
+
+# model weights are never committed; ultralytics downloads this on demand
+*.pt
