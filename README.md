@@ -3,6 +3,11 @@
 A local visual memory for video: it recognises objects it has seen before,
 finds ones that look alike, and flags ones that do not belong.
 
+![Each person outlined and numbered; a number is kept when they leave and return](docs/memory.gif)
+
+*Each object is outlined, numbered, and keeps its number when it leaves the
+frame and comes back. Everything below runs on a laptop CPU.*
+
 All three come from a single idea. One frozen vision encoder turns every
 tracked object into a vector, and each capability is a distance computation in
 that one space:
@@ -39,6 +44,22 @@ IDF1 is the MOT benchmark's identity F1, computed by `motmetrics`. The tracker
 row is the floor: what the numbers look like with re-identification switched
 off. Every threshold in `configs/default.yaml` was chosen by running the whole
 system end to end and reading these two columns, never by argument.
+
+The same system measured as retrieval, which is how the re-identification
+literature reports it — each observation queried against a gallery of all
+others, with same-track matches excluded so neighbouring frames cannot answer
+the query (`scripts/reid_retrieval.py`):
+
+| | Rank-1 | Rank-5 | mAP | queries |
+| --- | --- | --- | --- | --- |
+| MOT17-09 (held out) | **93.6%** | 95.7% | **88.7%** | 672 |
+| MOT17-02 (tuning) | 87.9% | 91.4% | 79.6% | 817 |
+
+The two views answer different questions. Rank-1 judges the embedding alone,
+with no tracker, threshold or binding logic involved; IDF1 judges the whole
+system built on top of it. The gap between a 93.6% Rank-1 and an 81.3% IDF1 is
+the cost of everything downstream of the features — and the reason the limits
+below are stated in detector terms.
 
 Honest limits, both measured rather than assumed:
 
