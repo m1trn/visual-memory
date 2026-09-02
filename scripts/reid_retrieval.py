@@ -107,7 +107,7 @@ def main() -> None:
 
     print(f"{sequence.name}  embedder: {load_appearance_config().model}")
     print(f"  gallery {result['gallery']} observations, {result['queries']} usable queries")
-    print(f"  (a query is usable only when its person also appears on another track)")
+    print("  (a query is usable only when its person also appears on another track)")
     print()
     print(f"  Rank-1   {result['rank1']:.1%}")
     print(f"  Rank-5   {result['rank5']:.1%}")
