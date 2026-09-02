@@ -130,10 +130,47 @@ positive ones:
 | idea | why it should work | what it did |
 | --- | --- | --- |
 | Silhouette-masked crops | remove the background from the embedding | held-out AUROC 0.979 to 0.962; the embedder is trained on rectangles |
-| Trained MLP pair verifier | learn the decision cosine approximates | 0.978 against cosine's 0.980, a wash |
-| 768 to 128 projection head | a sixth of the memory, same separation | separation held, end-to-end IDF1 two points lower; kept as an option, off |
 | Temporal voting on rebinds | confirm before committing, as OCR pipelines do | switches 9 to 35; a deferred track wears no number while a rival takes it |
 | Minimum confidence to create | stop static objects becoming people | rejected three ways; distant real people are also detected weakly |
+
+
+## The parts trained here
+
+The vision backbones are frozen and pretrained; three pieces are fitted from
+this project's own data, all of them on human labels rather than on the
+system's own output.
+
+**The decision boundary.** Not a hand-set number: it is fitted from mined pairs
+so that a stated false-merge rate is held, and re-fitted whenever the embedder
+changes, because each model scores on its own scale (0.593 for the shipped
+person embedder, 0.755 for the previous one). Two separate boundaries are
+calibrated, for two genuinely different questions — comparing two crops, and
+comparing a live track against a stored record that maximises over several
+saved views. The second sits higher by construction, and using one number for
+both merged different people.
+
+**A pair verifier** (`scripts/reid_train.py`, `MlpVerifier`) — one hidden layer
+of 128 over `[a*b, |a-b|, cos]`, trained in torch offline and run in numpy at
+inference so nothing new is needed to deploy it. Positives are the same
+annotated person at least 30 frames apart, since the returning person is the
+case that matters; negatives are weighted toward the hardest pairs, where
+cosine actually fails. Judged on a held-out sequence it scored 0.978 against
+plain cosine's 0.980. **Cosine ships.** An earlier version of this trained on
+pairs mined from the tracker's own output — circular ground truth — and that is
+exactly the mistake the labelled evaluation exists to prevent.
+
+**A projection head** (`scripts/reid_project.py`, `ProjectedEmbedder`) — a
+768→128 linear map trained with supervised contrastive loss, PCA-initialised,
+each batch holding several people with several views each, pulling a view
+toward its own person and pushing it from everyone else's, hardest negatives
+first. It held its separation on unseen returns at a sixth of the size, but
+cost about two points of end-to-end IDF1. Kept as a config option, off by
+default, for when memory and search cost matter more than accuracy.
+
+Two of the three lost to a simple baseline, and that is the result. The
+pipelines are in the repository because the way a thing was trained and judged
+is what makes the answer trustworthy — and because a trained model that beats
+nothing is worth exactly as much as knowing it beats nothing.
 
 
 ## Live
@@ -203,10 +240,6 @@ configs/default.yaml   every tunable, with the measurement behind it
 
 ## Notes on some choices
 
-- **Two boundaries, not one.** The threshold for "are these two crops the same
-  person" does not transfer to "is this track the person behind that stored
-  record", because the second maximises over several stored views and sits much
-  higher. Using one boundary for both caused false merges.
 - **Language search gets its own space, deliberately.** The identity vectors
   are trained so two people in similar coats land apart; text search needs the
   opposite, since "a red backpack" must match every red backpack. One space
