@@ -224,6 +224,27 @@ def _iou_row(box: np.ndarray, boxes: np.ndarray) -> np.ndarray:
     return inter / np.maximum(a + b - inter, 1e-6)
 
 
+def window_to_frame(point: tuple[int, int], window: tuple[int, int],
+                    frame_shape: tuple[int, int]) -> tuple[int, int]:
+    """Map a click in a resizable window back to a pixel in the frame.
+
+    A resizable window scales the image to fit, but reports mouse positions in
+    its own pixel space, so a click has to be divided by that scale to name the
+    object under it. The image is fitted preserving aspect ratio and centred,
+    so the letterbox padding comes off first.
+    """
+    win_w, win_h = window
+    frame_h, frame_w = frame_shape
+    if win_w <= 0 or win_h <= 0:
+        return point
+    scale = min(win_w / frame_w, win_h / frame_h)
+    pad_x = (win_w - frame_w * scale) / 2
+    pad_y = (win_h - frame_h * scale) / 2
+    x = int(round((point[0] - pad_x) / scale))
+    y = int(round((point[1] - pad_y) / scale))
+    return max(0, min(x, frame_w - 1)), max(0, min(y, frame_h - 1))
+
+
 class Heatmaps:
     """Patch-anomaly maps for the display, computed on their own thread.
 
@@ -513,7 +534,10 @@ def main() -> None:
             state["click"] = (x, y)
 
     win = "vision memory"
-    cv2.namedWindow(win)
+    # Resizable, and the image keeps its aspect ratio inside whatever size the
+    # window is dragged to. Mouse positions then arrive in window pixels rather
+    # than frame pixels, which `window_to_frame` undoes.
+    cv2.namedWindow(win, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
     cv2.setMouseCallback(win, on_mouse)
 
     shown = 0
@@ -539,7 +563,9 @@ def main() -> None:
                 views = follower.follow(frame, base)
 
             if state["click"] is not None:
-                cx, cy = state["click"]; state["click"] = None
+                rect = cv2.getWindowImageRect(win)
+                cx, cy = window_to_frame(state["click"], (rect[2], rect[3]), frame.shape[:2])
+                state["click"] = None
                 inside = [v for v in views if v.box[0] <= cx <= v.box[2] and v.box[1] <= cy <= v.box[3]]
                 if inside:
                     selected = inside[0].track_id
