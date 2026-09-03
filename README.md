@@ -132,7 +132,7 @@ positive ones:
 | Silhouette-masked crops | remove the background from the embedding | held-out AUROC 0.979 to 0.962; the embedder is trained on rectangles |
 | Temporal voting on rebinds | confirm before committing, as OCR pipelines do | switches 9 to 35; a deferred track wears no number while a rival takes it |
 | Minimum confidence to create | stop static objects becoming people | rejected three ways; distant real people are also detected weakly |
-| Fine-tuning the detector on the target domain | the detector is the measured ceiling and its weights are stock COCO | mAP50 0.840 to 0.887, and IDF1 81.3% to 67.8% with switches 9 to 37 |
+| Fine-tuning the detector on the target domain | the detector is the measured ceiling and its weights are stock COCO | five cameras lift its own recall 0.826 to 0.859 and mAP50 0.840 to 0.917, while held-out IDF1 falls 81.3% to 67.4% |
 
 
 ## The parts trained here
