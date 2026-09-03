@@ -173,6 +173,67 @@ pipelines are in the repository because the way a thing was trained and judged
 is what makes the answer trustworthy — and because a trained model that beats
 nothing is worth exactly as much as knowing it beats nothing.
 
+### What actually moved the numbers
+
+The largest single gain in this project came from **choosing** rather than
+training. Swapping the person embedder from OSNet x0.25 to Tencent YouTu is a
+one-line configuration change, and held out it was worth **+14.7 IDF1 and half
+the identity switches** — more than every training experiment here put
+together. Second was **routing**: sending people to a person specialist and
+everything else to a general encoder, because measurement showed each model
+collapses on the other's subject. Third was **calibration**: fitting the
+decision boundaries from labelled pairs instead of setting them by hand, worth
+77.5% accuracy against 68.8% on held-out tracks.
+
+None of those are models we trained. All of them are decisions we measured.
+
+### The detector, and the limit of the method
+
+The detector is the system's ceiling — nobody can be re-identified who was
+never detected — and it ships with stock COCO weights while this footage is
+small, distant, overhead pedestrians. That mismatch made fine-tuning the one
+remaining lever with measured headroom, so it was tried properly, twice.
+
+    held out, MOT17-09         recall   mAP50    IDF1    IDsw
+      stock COCO                0.826   0.840   81.3%       9
+      fine-tuned, 1 camera      0.818   0.887   67.8%      37
+      fine-tuned, 5 cameras     0.859   0.917   67.4%      41
+
+The first attempt failed in a way that was easy to explain: 600 frames of a
+single fixed camera taught the model that scene rather than pedestrians, it
+became more conservative, and it made 31% fewer detections. Fewer detections
+means gaps in tracks, fragmentation rose 44 to 71, and every restart is a new
+identity. Precision, mAP and MOTA all improved while the thing that matters
+collapsed — a good illustration of why this project scores itself end to end
+rather than on the detector's own metrics.
+
+The second attempt fixed what the first one taught: five cameras instead of
+one, mosaic augmentation off, and checkpoint selection on recall rather than
+mAP. The detector genuinely improved — recall 0.826 to 0.859, the first time
+that number moved the right way — and the system still got worse.
+
+**That result is recorded as unresolved, because it is.** The five-camera model
+matches the stock one on every detector measure available here: recall 93.8%
+against 94.1%, detections 2,103 against 2,128, box overlap with ground truth
+0.828 against 0.817 (better), frame-to-frame stability 0.783 against 0.785,
+detection gaps 21 against 21, false positives 30.1% against 30.8%. Yet the
+tracker alone fragments twice as often and loses seven IDF1 points before
+re-identification is involved at all, and re-sweeping the re-id boundary does
+not recover it.
+
+The likeliest explanation, and it is a hypothesis rather than a finding: every
+tracker threshold here — `max_age`, `iou_threshold`, `appearance_veto`,
+`measurement_noise`, `high_conf` — was chosen against the stock detector's
+output. The system is co-adapted to its detector in the same way the re-id
+boundary is co-adapted to its embedder, which this project already knows must
+be re-fitted after a swap. If that is right, replacing the detector means
+re-tuning the tracker, and a component swapped in isolation will lose however
+good it is on its own.
+
+Stock weights ship. What the two attempts bought is a closed question and a
+measured shape for the next one: more cameras, then re-tune what sits on top,
+and judge it on recall and identity rather than on the metric that flatters.
+
 
 ## Live
 
