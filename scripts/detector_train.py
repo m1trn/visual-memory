@@ -39,10 +39,25 @@ def main() -> None:
                     help="backbone layers held fixed; the features are already good, "
                          "it is the detection head that has not seen this domain")
     ap.add_argument("--name", default="mot_person")
+    ap.add_argument("--resume", action="store_true",
+                    help="continue an interrupted run from its last checkpoint; "
+                         "training on a CPU takes hours and is worth restarting rather than repeating")
     ap.add_argument("--out", type=Path, default=Path("data/models/yolo11n_mot_768.onnx"))
     args = ap.parse_args()
 
     from ultralytics import YOLO
+
+    run = Path("data/detector/runs") / args.name
+    last = run / "weights" / "last.pt"
+    if args.resume and last.exists():
+        print(f"resuming from {last}")
+        YOLO(str(last)).train(resume=True)
+        model = YOLO(str(run / "weights" / "best.pt"))
+        exported = model.export(format="onnx", imgsz=args.imgsz, opset=12, simplify=False)
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        Path(exported).replace(args.out)
+        print(f"\n-> {args.out}")
+        return
 
     model = YOLO(args.weights)
     model.train(
